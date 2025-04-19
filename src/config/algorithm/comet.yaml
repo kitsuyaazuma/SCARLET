@@ -1,0 +1,7 @@
+name: "comet"
+num_clusters: 2
+kmeans_device: "cuda"
+regularization_weight: 1.0
+
+enable_cache: false
+cache_duration: 0

@@ -1,0 +1,9 @@
+name: "selectivefd"
+gaussian_kernel_width: 5.0
+lambda_exponent: 0.5
+kulsif_test_batch_size: 1000
+l1_distance_threshold: 2.0
+dre_threshold: 0.125
+
+enable_cache: false
+cache_duration: 0
