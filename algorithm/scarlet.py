@@ -1,42 +1,59 @@
 import random
-from collections import defaultdict
-from collections.abc import Mapping
+from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
+from typing import NamedTuple
 
 from blazefl.core import (
     ParallelClientTrainer,
     ServerHandler,
 )
 from blazefl.utils import (
-    FilteredDataset,
     RandomState,
     seed_everything,
 )
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
+from algorithm.dsfl import (
+    DSFLClientState,
+    DSFLServerHandler,
+    DSFLClientTrainer,
+    DiskSharedData,
+)
 from dataset import CommonPartitionedDataset
 from models import CommonModelSelector
 
 
 @dataclass
-class DSFLUplinkPackage:
+class SCARLETUplinkPackage:
     soft_labels: torch.Tensor
     indices: torch.Tensor
     metadata: dict
 
 
 @dataclass
-class DSFLDownlinkPackage:
+class SCARLETDownlinkPackage:
     soft_labels: torch.Tensor | None
     indices: torch.Tensor | None
     next_indices: torch.Tensor
+    cache_signals: torch.Tensor | None
 
 
-class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
+class CacheSignal(IntEnum):
+    CACHED = 0
+    NEWLY_CACHED = 1
+    EXPIRED = 2
+
+
+class GlobalCacheEntry(NamedTuple):
+    soft_label: torch.Tensor | None
+    round: int
+
+
+class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPackage]):
     def __init__(
         self,
         model_selector: CommonModelSelector,
@@ -50,7 +67,8 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         kd_batch_size: int,
         kd_lr: float,
         public_size_per_round: int,
-        era_temperature: float,
+        enhanced_era_exponent: float,
+        cache_duration: int,
     ) -> None:
         self.model = model_selector.select_model(model_name)
         self.dataset = dataset
@@ -62,13 +80,20 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         self.kd_batch_size = kd_batch_size
         self.kd_lr = kd_lr
         self.public_size_per_round = public_size_per_round
-        self.era_temperature = era_temperature
+        self.enhanced_era_exponent = enhanced_era_exponent
+        self.cache_duration = cache_duration
 
-        self.client_buffer_cache: list[DSFLUplinkPackage] = []
+        self.client_buffer_cache: list[SCARLETUplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
         self.global_indices: torch.Tensor | None = None
         self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
         self.round = 0
+
+        self.global_cache: list[GlobalCacheEntry] = [
+            GlobalCacheEntry(soft_label=None, round=0)
+            for _ in range(self.dataset.public_size)
+        ]
+        self.cache_signals: torch.Tensor | None = None
 
     def sample_clients(self) -> list[int]:
         sampled_clients = random.sample(
@@ -79,12 +104,25 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
 
     def get_next_indices(self) -> torch.Tensor:
         shuffled_indices = torch.randperm(self.dataset.public_size)
-        return shuffled_indices[: self.public_size_per_round]
+        next_indices = shuffled_indices[: self.public_size_per_round]
+        self.cached_indices = []
+        request_indices = []
+        for i in next_indices.tolist():
+            cache_entry = self.global_cache[i]
+            if (
+                cache_entry.soft_label is not None
+                and cache_entry.round + self.cache_duration < self.round
+            ):
+                # Record cached indices to restore it from global cache later
+                self.cached_indices.append(i)
+            else:
+                request_indices.append(i)
+        return torch.tensor(request_indices)
 
     def if_stop(self) -> bool:
         return self.round >= self.global_round
 
-    def load(self, payload: DSFLUplinkPackage) -> bool:
+    def load(self, payload: SCARLETUplinkPackage) -> bool:
         self.client_buffer_cache.append(payload)
 
         if len(self.client_buffer_cache) == self.num_clients_per_round:
@@ -112,9 +150,21 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         for indices, soft_labels in soft_labels_stack.items():
             global_indices.append(indices)
             mean_soft_labels = torch.mean(torch.stack(soft_labels), dim=0)
-            # Entropy Reduction Aggregation (ERA)
-            era_soft_labels = F.softmax(mean_soft_labels / self.era_temperature, dim=0)
-            global_soft_labels.append(era_soft_labels)
+            # Enhanced ERA
+            enhanced_era_soft_labels = (
+                mean_soft_labels** self.enhanced_era_exponent
+                / torch.sum(mean_soft_labels**self.enhanced_era_exponent)
+            )
+            global_soft_labels.append(enhanced_era_soft_labels)
+
+        # Restore cached indices and soft-labels
+        for i in self.cached_indices:
+            global_indices.append(i)
+            global_soft_labels.append(self.global_cache[i].prob)
+
+        # Update global cache
+        cache_signals = self.update_global_cache(global_indices, global_soft_labels)
+        self.cache_signals = torch.tensor([signal.value for signal in cache_signals])
 
         DSFLServerHandler.distill(
             self.model,
@@ -127,83 +177,37 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             self.device,
         )
 
-        self.global_soft_labels = torch.stack(global_soft_labels)
+        updated_global_soft_labels = [
+            soft_label
+            for i, soft_label in enumerate(global_soft_labels)
+            if cache_signals[i] != CacheSignal.CACHED
+        ]
+        if len(updated_global_soft_labels) == 0:
+            self.global_soft_labels = torch.empty(0)
+        else:
+            self.global_soft_labels = torch.stack(updated_global_soft_labels)
+
         self.global_indices = torch.tensor(global_indices)
 
-    @staticmethod
-    def distill(
-        model: torch.nn.Module,
-        dataset: CommonPartitionedDataset,
-        global_soft_labels: list[torch.Tensor],
-        global_indices: list[int],
-        kd_epochs: int,
-        kd_batch_size: int,
-        kd_lr: float,
-        device: str,
-    ) -> None:
-        model.to(device)
-        model.train()
-        openset = dataset.get_dataset(type_="public", cid=None)
-        data_loader = DataLoader(
-            Subset(openset, global_indices),
-            batch_size=kd_batch_size,
-        )
-        global_soft_label_loader = DataLoader(
-            FilteredDataset(
-                indices=list(range(len(global_soft_labels))),
-                original_data=global_soft_labels,
-            ),
-            batch_size=kd_batch_size,
-        )
-        optimizer = torch.optim.SGD(model.parameters(), lr=kd_lr)
-        for _ in range(kd_epochs):
-            for data, soft_label in zip(
-                data_loader, global_soft_label_loader, strict=True
-            ):
-                data = data.to(device)
-                soft_label = soft_label.to(device).squeeze(1)
-
-                output = model(data)
-                loss = F.kl_div(
-                    F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
+    def update_global_cache(
+        self, indices: list[int], soft_labels: list[torch.Tensor]
+    ) -> list[CacheSignal]:
+        cache_signals = []
+        for i, soft_label in zip(indices, soft_labels):
+            if self.global_cache[i].soft_label is None:
+                self.global_cache[i] = GlobalCacheEntry(
+                    soft_label=soft_label, round=self.round
                 )
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-        return
-
-    @staticmethod
-    def evaulate(
-        model: torch.nn.Module, test_loader: DataLoader, device: str
-    ) -> tuple[float, float]:
-        model.to(device)
-        model.eval()
-        criterion = torch.nn.CrossEntropyLoss()
-
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
-        with torch.no_grad():
-            for inputs, labels in test_loader:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-
-                _, predicted = torch.max(outputs, 1)
-                correct = torch.sum(predicted.eq(labels)).item()
-
-                batch_size = labels.size(0)
-                total_loss += loss.item() * batch_size
-                total_correct += int(correct)
-                total_samples += batch_size
-
-        avg_loss = total_loss / total_samples
-        avg_acc = total_correct / total_samples
-
-        return avg_loss, avg_acc
+                cache_signals.append(CacheSignal.NEWLY_CACHED)
+            else:
+                if self.round - self.global_cache[i].round <= self.cache_duration:
+                    cache_signals.append(CacheSignal.CACHED)
+                else:
+                    self.global_cache[i] = GlobalCacheEntry(
+                        soft_label=None, round=self.round
+                    )
+                    cache_signals.append(CacheSignal.EXPIRED)
+        return cache_signals
 
     def get_summary(self) -> dict[str, float]:
         server_loss, server_acc = DSFLServerHandler.evaulate(
@@ -226,42 +230,34 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             "client_loss": client_loss,
         }
 
-    def downlink_package(self) -> DSFLDownlinkPackage:
+    def downlink_package(self) -> SCARLETDownlinkPackage:
         next_indices = self.get_next_indices()
-        return DSFLDownlinkPackage(
-            self.global_soft_labels, self.global_indices, next_indices
+        return SCARLETDownlinkPackage(
+            self.global_soft_labels,
+            self.global_indices,
+            next_indices,
+            self.cache_signals,
         )
 
 
 @dataclass
-class DiskSharedData:
-    model_selector: CommonModelSelector
-    model_name: str
-    dataset: CommonPartitionedDataset
-    epochs: int
-    batch_size: int
-    lr: float
-    kd_epochs: int
-    kd_batch_size: int
-    kd_lr: float
-    cid: int
-    seed: int
-    state_path: Path
+class SCARLETDiskSharedData(DiskSharedData):
+    payload: SCARLETDownlinkPackage
+
+
+class LocalCacheEntry(NamedTuple):
+    soft_label: torch.Tensor | None
 
 
 @dataclass
-class DSFLDiskSharedData(DiskSharedData):
-    payload: DSFLDownlinkPackage
+class SCARLETClientState(DSFLClientState):
+    local_cache: list[LocalCacheEntry]
 
 
-@dataclass
-class DSFLClientState:
-    random: RandomState
-    model: Mapping[str, torch.Tensor]
-
-
-class DSFLClientTrainer(
-    ParallelClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLDiskSharedData]
+class SCARLETClientTrainer(
+    ParallelClientTrainer[
+        SCARLETUplinkPackage, SCARLETDownlinkPackage, SCARLETDiskSharedData
+    ]
 ):
     def __init__(
         self,
@@ -303,15 +299,20 @@ class DSFLClientTrainer(
     @staticmethod
     def process_client(path: Path, device: str) -> Path:
         data = torch.load(path, weights_only=False)
-        assert isinstance(data, DSFLDiskSharedData)
+        assert isinstance(data, SCARLETDiskSharedData)
 
-        state: DSFLClientState | None = None
+        state: SCARLETClientState | None = None
         if data.state_path.exists():
             state = torch.load(data.state_path, weights_only=False)
-            assert isinstance(state, DSFLClientState)
+            assert isinstance(state, SCARLETClientState)
             RandomState.set_random_state(state.random)
+            local_cache = state.local_cache
         else:
             seed_everything(data.seed, device=device)
+            local_cache = [
+                LocalCacheEntry(soft_label=None)
+                for _ in range(data.dataset.public_size)
+            ]
 
         model = data.model_selector.select_model(data.model_name)
 
@@ -320,8 +321,18 @@ class DSFLClientTrainer(
 
         # Distill
         public_dataset = data.dataset.get_dataset(type_="public", cid=None)
-        if data.payload.indices is not None and data.payload.soft_labels is not None:
-            global_soft_labels = list(torch.unbind(data.payload.soft_labels, dim=0))
+        if (
+            data.payload.indices is not None
+            and data.payload.soft_labels is not None
+            and data.payload.cache_signals is not None
+        ):
+            local_cache, global_soft_labels = SCARLETClientTrainer.update_local_cache(
+                global_soft_labels=data.payload.soft_labels,
+                global_indices=data.payload.indices,
+                local_cache=local_cache,
+                cache_signals=data.payload.cache_signals,
+            )
+
             global_indices = data.payload.indices.tolist()
             DSFLServerHandler.distill(
                 model=model,
@@ -371,69 +382,50 @@ class DSFLClientTrainer(
             device=device,
         )
 
-        package = DSFLUplinkPackage(
+        package = SCARLETUplinkPackage(
             soft_labels=torch.stack(soft_labels),
             indices=data.payload.next_indices,
             metadata={"loss": loss, "acc": acc},
         )
 
         torch.save(package, path)
-        state = DSFLClientState(
+        state = SCARLETClientState(
             random=RandomState.get_random_state(device=device),
             model=model.state_dict(),
+            local_cache=local_cache,
         )
         torch.save(state, data.state_path)
         return path
 
     @staticmethod
-    def train(
-        model: torch.nn.Module,
-        data_loader: DataLoader,
-        device: str,
-        epochs: int,
-        lr: float,
-    ) -> None:
-        model.to(device)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-        criterion = torch.nn.CrossEntropyLoss()
-
-        for _ in range(epochs):
-            for data, target in data_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-        return
-
-    @staticmethod
-    def predict(
-        model: torch.nn.Module, data_loader: DataLoader, device: str
-    ) -> list[torch.Tensor]:
-        model.to(device)
-        model.eval()
-
-        soft_labels = []
-        with torch.no_grad():
-            for data in data_loader:
-                data = data.to(device)
-
-                output = model(data)
-                soft_label = F.softmax(output, dim=1)
-
-                soft_labels.extend([sl.detach().cpu() for sl in soft_label])
-
-        return soft_labels
+    def update_local_cache(
+        global_soft_labels: torch.Tensor,
+        global_indices: torch.Tensor,
+        local_cache: list[LocalCacheEntry],
+        cache_signals: torch.Tensor,
+    ) -> tuple[list[LocalCacheEntry], list[torch.Tensor]]:
+        global_soft_labels_queue = deque(torch.unbind(global_soft_labels, dim=0))
+        restored_global_soft_labels = []
+        for i, cache_signal in zip(global_indices, cache_signals.tolist()):
+            match cache_signal:
+                case CacheSignal.CACHED.value:
+                    restored_global_soft_labels.append(local_cache[i].soft_label)
+                case CacheSignal.NEWLY_CACHED.value:
+                    local_cache[i] = LocalCacheEntry(
+                        soft_label=global_soft_labels_queue.popleft()
+                    )
+                    restored_global_soft_labels.append(local_cache[i].soft_label)
+                case CacheSignal.EXPIRED.value:
+                    local_cache[i] = LocalCacheEntry(soft_label=None)
+                    restored_global_soft_labels.append(
+                        global_soft_labels_queue.popleft()
+                    )
+        return local_cache, restored_global_soft_labels
 
     def get_shared_data(
-        self, cid: int, payload: DSFLDownlinkPackage
-    ) -> DSFLDiskSharedData:
-        data = DSFLDiskSharedData(
+        self, cid: int, payload: SCARLETDownlinkPackage
+    ) -> SCARLETDiskSharedData:
+        data = SCARLETDiskSharedData(
             model_selector=self.model_selector,
             model_name=self.model_name,
             dataset=self.dataset,
@@ -450,7 +442,7 @@ class DSFLClientTrainer(
         )
         return data
 
-    def uplink_package(self) -> list[DSFLUplinkPackage]:
+    def uplink_package(self) -> list[SCARLETUplinkPackage]:
         package = deepcopy(self.cache)
-        self.cache: list[DSFLUplinkPackage] = []
+        self.cache: list[SCARLETUplinkPackage] = []
         return package

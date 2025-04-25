@@ -1,7 +1,6 @@
 from datetime import datetime
 import logging
 from pathlib import Path
-from typing import TypeAlias
 
 from blazefl.utils import seed_everything
 import hydra
@@ -12,51 +11,15 @@ import torch.multiprocessing as mp
 from torch.utils.tensorboard.writer import SummaryWriter
 from torchvision import transforms
 
-from algorithm import DSFLServerHandler, DSFLClientTrainer
+from algorithm import (
+    DSFLServerHandler,
+    DSFLClientTrainer,
+    SCARLETServerHandler,
+    SCARLETClientTrainer,
+)
+from pipeline import DSFLPipeline, SCARLETPipeline
 from dataset import CommonPartitionedDataset
 from models.selector import CommonModelSelector
-
-ServerHandler: TypeAlias = DSFLServerHandler
-ClientTrainer: TypeAlias = DSFLClientTrainer
-
-
-class CommonPipeline:
-    def __init__(
-        self,
-        handler: ServerHandler,
-        trainer: ClientTrainer,
-        writer: SummaryWriter,
-    ) -> None:
-        self.handler = handler
-        self.trainer = trainer
-        self.writer = writer
-
-    def main(self) -> None:
-        while not self.handler.if_stop():
-            round_ = self.handler.round
-            # server side
-            sampled_clients = self.handler.sample_clients()
-            broadcast = self.handler.downlink_package()
-
-            # client side
-            self.trainer.local_process(broadcast, sampled_clients)
-            uploads = self.trainer.uplink_package()
-
-            # server side
-            for pack in uploads:
-                self.handler.load(pack)
-
-            summary = self.handler.get_summary()
-            for key, value in summary.items():
-                self.writer.add_scalar(key, value, round_)
-            formatted_str = (
-                "{ "
-                + ", ".join("'{}': {:.3f}".format(k, v) for k, v in summary.items())
-                + " }"
-            )
-            logging.info(f"Round {round_}: {formatted_str}")
-
-        logging.info("Done!")
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
@@ -140,14 +103,28 @@ def main(cfg: DictConfig) -> None:
             trainer = DSFLClientTrainer(
                 **trainer_args,
             )
+            pipeline = DSFLPipeline(
+                handler=handler,
+                trainer=trainer,
+                writer=writer,
+            )
+        case "scarlet":
+            handler = SCARLETServerHandler(
+                **handler_args,
+                enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
+                cache_duration=cfg.algorithm.cache_duration,
+            )
+            trainer = SCARLETClientTrainer(
+                **trainer_args,
+            )
+            pipeline = SCARLETPipeline(
+                handler=handler,
+                trainer=trainer,
+                writer=writer,
+            )
         case _:
             raise ValueError(f"Invalid algorithm: {cfg.algorithm.name}")
 
-    pipeline = CommonPipeline(
-        handler=handler,
-        trainer=trainer,
-        writer=writer,
-    )
     try:
         pipeline.main()
     except KeyboardInterrupt:
