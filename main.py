@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
         device = "cuda"
     elif torch.backends.mps.is_available():
         device = "mps"
-    logging.info(f"Using device: {device}")
+    logging.info(f"device: {device}")
 
     seed_everything(cfg.seed, device=device)
 

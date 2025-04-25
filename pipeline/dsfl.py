@@ -34,11 +34,7 @@ class DSFLPipeline:
             summary = self.handler.get_summary()
             for key, value in summary.items():
                 self.writer.add_scalar(key, value, round_)
-            formatted_str = (
-                "{ "
-                + ", ".join("'{}': {:.3f}".format(k, v) for k, v in summary.items())
-                + " }"
-            )
-            logging.info(f"Round {round_}: {formatted_str}")
+            formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
+            logging.info(f"round: {round_}, {formatted_summary}")
 
-        logging.info("Done!")
+        logging.info("done!")
