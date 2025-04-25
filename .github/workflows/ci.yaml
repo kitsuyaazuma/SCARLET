@@ -28,7 +28,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run ruff
-        run: uv run ruff check --output-format=github src
+        run: uv run ruff check --output-format=github .
 
       - name: Run mypy
         run: uv run mypy src
