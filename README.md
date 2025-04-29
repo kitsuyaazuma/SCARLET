@@ -60,14 +60,16 @@ Use these baselines as a rough guide—not as definitive "official" code.
 
 # Citation
 
-If you use this code, please cite our manuscript:
+If you use this code in your research, please cite our preprint:
 
 ```bibtex
-@unpublished{azuma2025scarlet,
-  author       = {Azuma, Kitsuya and Nishio, Takayuki and Kitagawa, Yuichi and Nakano, Wakako and Tanimura, Takahito},
-  title        = {Soft‑Label Caching and Sharpening for Communication‑Efficient Federated Distillation},
-  note         = {Manuscript under review},
-  year         = {2025},
-  url          = {https://github.com/kitsuyaazuma/SCARLET},
+@misc{azuma2025softlabelcachingsharpeningcommunicationefficient,
+      title={Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation}, 
+      author={Kitsuya Azuma and Takayuki Nishio and Yuichi Kitagawa and Wakako Nakano and Takahito Tanimura},
+      year={2025},
+      eprint={2504.19602},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2504.19602}, 
 }
 ```
