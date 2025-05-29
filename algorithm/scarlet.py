@@ -160,7 +160,7 @@ class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPa
         # Restore cached indices and soft-labels
         for i in self.cached_indices:
             global_indices.append(i)
-            global_soft_labels.append(self.global_cache[i].prob)
+            global_soft_labels.append(self.global_cache[i].soft_label)
 
         # Update global cache
         cache_signals = self.update_global_cache(global_indices, global_soft_labels)
