@@ -363,7 +363,6 @@ class SCARLETClientTrainer(
             data_loader=private_loader,
             device=device,
             epochs=data.epochs,
-            lr=data.lr,
         )
 
         # Predict

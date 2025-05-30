@@ -353,7 +353,6 @@ class DSFLClientTrainer(
             data_loader=private_loader,
             device=device,
             epochs=data.epochs,
-            lr=data.lr,
         )
 
         # Predict
@@ -402,11 +401,9 @@ class DSFLClientTrainer(
         data_loader: DataLoader,
         device: str,
         epochs: int,
-        lr: float,
     ) -> None:
         model.to(device)
         model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
         criterion = torch.nn.CrossEntropyLoss()
 
         for _ in range(epochs):
