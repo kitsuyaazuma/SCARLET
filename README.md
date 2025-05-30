@@ -24,7 +24,7 @@ git clone -b reproducibility https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 docker build -t scarlet .
 docker run -it --rm --gpus=all --name scarlet scarlet:latest \
-    bash -c "cd src && poetry run python main.py +algorithm=scarlet"
+    bash -c "cd SCARLET/src && poetry run python main.py +algorithm=scarlet"
 ```
 
 # Configuration
