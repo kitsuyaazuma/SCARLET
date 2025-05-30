@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sized
+from collections.abc import Sized
 from enum import StrEnum
 from pathlib import Path
 
@@ -6,6 +6,7 @@ from blazefl.core import PartitionedDataset
 from blazefl.utils import FilteredDataset
 import torch
 import torchvision
+from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
 
@@ -32,8 +33,6 @@ class CommonPartitionedDataset(PartitionedDataset):
         partition: str,
         dir_alpha: float,
         public_size: int,
-        transform: Callable | None = None,
-        target_transform: Callable | None = None,
     ) -> None:
         self.root = root
         self.path = path
@@ -44,8 +43,21 @@ class CommonPartitionedDataset(PartitionedDataset):
         self.partition = partition
         self.dir_alpha = dir_alpha
         self.public_size = public_size
-        self.transform = transform
-        self.target_transform = target_transform
+        self.train_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomCrop(32, padding=4),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        self.test_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        self.target_transform = None
 
         self._preprocess()
 
@@ -116,7 +128,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                 indices.tolist(),
                 private_dataset.data,
                 private_dataset.targets,
-                transform=self.transform,
+                transform=self.train_transform,
                 target_transform=self.target_transform,
             )
             torch.save(
@@ -128,7 +140,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                 indices.tolist(),
                 test_dataset.data,
                 test_dataset.targets,
-                transform=self.transform,
+                transform=self.test_transform,
                 target_transform=self.target_transform,
             )
             torch.save(client_test_dataset, self.path.joinpath("test", f"{cid}.pkl"))
@@ -142,7 +154,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                 public_indices,
                 public_dataset.data,
                 original_targets=None,
-                transform=self.transform,
+                transform=self.train_transform,
                 target_transform=self.target_transform,
             ),
             self.path.joinpath("public", "public.pkl"),
@@ -153,7 +165,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                 list(range(len(test_dataset))),
                 test_dataset.data,
                 test_dataset.targets,
-                transform=self.transform,
+                transform=self.test_transform,
                 target_transform=self.target_transform,
             ),
             self.path.joinpath("test", "test.pkl"),

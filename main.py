@@ -9,7 +9,6 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.multiprocessing as mp
 from torch.utils.tensorboard.writer import SummaryWriter
-from torchvision import transforms
 
 from algorithm import (
     DSFLServerHandler,
@@ -54,12 +53,6 @@ def main(cfg: DictConfig) -> None:
         partition=cfg.partition,
         dir_alpha=cfg.dir_alpha,
         public_size=cfg.public_size,
-        transform=transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        ),
     )
     model_selector = CommonModelSelector(num_classes=dataset.num_classes)
 
