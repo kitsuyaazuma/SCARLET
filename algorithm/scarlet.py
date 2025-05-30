@@ -83,6 +83,7 @@ class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPa
         self.enhanced_era_exponent = enhanced_era_exponent
         self.cache_duration = cache_duration
 
+        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
         self.client_buffer_cache: list[SCARLETUplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
         self.global_indices: torch.Tensor | None = None
@@ -168,12 +169,12 @@ class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPa
 
         DSFLServerHandler.distill(
             self.model,
+            self.kd_optimizer,
             self.dataset,
             global_soft_labels,
             global_indices,
             self.kd_epochs,
             self.kd_batch_size,
-            self.kd_lr,
             self.device,
         )
 
@@ -301,12 +302,21 @@ class SCARLETClientTrainer(
         data = torch.load(path, weights_only=False)
         assert isinstance(data, SCARLETDiskSharedData)
 
+        model = data.model_selector.select_model(data.model_name)
+        optimizer = torch.optim.SGD(model.parameters(), lr=data.lr)
+        kd_optimizer: torch.optim.SGD | None = None
+
         state: SCARLETClientState | None = None
         if data.state_path.exists():
             state = torch.load(data.state_path, weights_only=False)
             assert isinstance(state, SCARLETClientState)
             RandomState.set_random_state(state.random)
             local_cache = state.local_cache
+            model.load_state_dict(state.model)
+            optimizer.load_state_dict(state.optimizer)
+            if state.kd_optimizer is not None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
+                kd_optimizer.load_state_dict(state.kd_optimizer)
         else:
             seed_everything(data.seed, device=device)
             local_cache = [
@@ -315,9 +325,6 @@ class SCARLETClientTrainer(
             ]
 
         model = data.model_selector.select_model(data.model_name)
-
-        if state is not None:
-            model.load_state_dict(state.model)
 
         # Distill
         public_dataset = data.dataset.get_dataset(type_="public", cid=None)
@@ -332,16 +339,17 @@ class SCARLETClientTrainer(
                 local_cache=local_cache,
                 cache_signals=data.payload.cache_signals,
             )
-
             global_indices = data.payload.indices.tolist()
+            if kd_optimizer is None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
             DSFLServerHandler.distill(
                 model=model,
+                optimizer=kd_optimizer,
                 dataset=data.dataset,
                 global_soft_labels=global_soft_labels,
                 global_indices=global_indices,
                 kd_epochs=data.kd_epochs,
                 kd_batch_size=data.kd_batch_size,
-                kd_lr=data.kd_lr,
                 device=device,
             )
 
@@ -353,6 +361,7 @@ class SCARLETClientTrainer(
         )
         DSFLClientTrainer.train(
             model=model,
+            optimizer=optimizer,
             data_loader=private_loader,
             device=device,
             epochs=data.epochs,
@@ -392,6 +401,8 @@ class SCARLETClientTrainer(
         state = SCARLETClientState(
             random=RandomState.get_random_state(device=device),
             model=model.state_dict(),
+            optimizer=optimizer.state_dict(),
+            kd_optimizer=kd_optimizer.state_dict() if kd_optimizer else None,
             local_cache=local_cache,
         )
         torch.save(state, data.state_path)

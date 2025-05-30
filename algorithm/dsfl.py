@@ -1,6 +1,5 @@
 import random
 from collections import defaultdict
-from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +63,7 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         self.public_size_per_round = public_size_per_round
         self.era_temperature = era_temperature
 
+        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
         self.client_buffer_cache: list[DSFLUplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
         self.global_indices: torch.Tensor | None = None
@@ -118,12 +118,12 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
 
         DSFLServerHandler.distill(
             self.model,
+            self.kd_optimizer,
             self.dataset,
             global_soft_labels,
             global_indices,
             self.kd_epochs,
             self.kd_batch_size,
-            self.kd_lr,
             self.device,
         )
 
@@ -133,12 +133,12 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
     @staticmethod
     def distill(
         model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
         dataset: CommonPartitionedDataset,
         global_soft_labels: list[torch.Tensor],
         global_indices: list[int],
         kd_epochs: int,
         kd_batch_size: int,
-        kd_lr: float,
         device: str,
     ) -> None:
         model.to(device)
@@ -155,7 +155,6 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             ),
             batch_size=kd_batch_size,
         )
-        optimizer = torch.optim.SGD(model.parameters(), lr=kd_lr)
         for _ in range(kd_epochs):
             for data, soft_label in zip(
                 data_loader, global_soft_label_loader, strict=True
@@ -257,7 +256,9 @@ class DSFLDiskSharedData(DiskSharedData):
 @dataclass
 class DSFLClientState:
     random: RandomState
-    model: Mapping[str, torch.Tensor]
+    model: dict[str, torch.Tensor]
+    optimizer: dict[str, torch.Tensor]
+    kd_optimizer: dict[str, torch.Tensor] | None
 
 
 class DSFLClientTrainer(
@@ -305,32 +306,38 @@ class DSFLClientTrainer(
         data = torch.load(path, weights_only=False)
         assert isinstance(data, DSFLDiskSharedData)
 
+        model = data.model_selector.select_model(data.model_name)
+        optimizer = torch.optim.SGD(model.parameters(), lr=data.lr)
+        kd_optimizer: torch.optim.SGD | None = None
+
         state: DSFLClientState | None = None
         if data.state_path.exists():
             state = torch.load(data.state_path, weights_only=False)
             assert isinstance(state, DSFLClientState)
             RandomState.set_random_state(state.random)
+            model.load_state_dict(state.model)
+            optimizer.load_state_dict(state.optimizer)
+            if state.kd_optimizer is not None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
+                kd_optimizer.load_state_dict(state.kd_optimizer)
         else:
             seed_everything(data.seed, device=device)
-
-        model = data.model_selector.select_model(data.model_name)
-
-        if state is not None:
-            model.load_state_dict(state.model)
 
         # Distill
         public_dataset = data.dataset.get_dataset(type_="public", cid=None)
         if data.payload.indices is not None and data.payload.soft_labels is not None:
             global_soft_labels = list(torch.unbind(data.payload.soft_labels, dim=0))
             global_indices = data.payload.indices.tolist()
+            if kd_optimizer is None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
             DSFLServerHandler.distill(
                 model=model,
+                optimizer=kd_optimizer,
                 dataset=data.dataset,
                 global_soft_labels=global_soft_labels,
                 global_indices=global_indices,
                 kd_epochs=data.kd_epochs,
                 kd_batch_size=data.kd_batch_size,
-                kd_lr=data.kd_lr,
                 device=device,
             )
 
@@ -342,6 +349,7 @@ class DSFLClientTrainer(
         )
         DSFLClientTrainer.train(
             model=model,
+            optimizer=optimizer,
             data_loader=private_loader,
             device=device,
             epochs=data.epochs,
@@ -381,6 +389,8 @@ class DSFLClientTrainer(
         state = DSFLClientState(
             random=RandomState.get_random_state(device=device),
             model=model.state_dict(),
+            optimizer=optimizer.state_dict(),
+            kd_optimizer=kd_optimizer.state_dict() if kd_optimizer else None,
         )
         torch.save(state, data.state_path)
         return path
@@ -388,6 +398,7 @@ class DSFLClientTrainer(
     @staticmethod
     def train(
         model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
         data_loader: DataLoader,
         device: str,
         epochs: int,
