@@ -111,7 +111,7 @@ class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPa
             cache_entry = self.global_cache[i]
             if (
                 cache_entry.soft_label is not None
-                and cache_entry.round + self.cache_duration < self.round
+                and cache_entry.round + self.cache_duration > self.round
             ):
                 # Record cached indices to restore it from global cache later
                 self.cached_indices.append(i)
