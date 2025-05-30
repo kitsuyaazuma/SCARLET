@@ -324,8 +324,6 @@ class SCARLETClientTrainer(
                 for _ in range(data.dataset.public_size)
             ]
 
-        model = data.model_selector.select_model(data.model_name)
-
         # Distill
         public_dataset = data.dataset.get_dataset(type_="public", cid=None)
         if (
