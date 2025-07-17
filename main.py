@@ -1,24 +1,24 @@
-from datetime import datetime
 import logging
+from datetime import datetime
 from pathlib import Path
 
-from blazefl.utils import seed_everything
 import hydra
-from hydra.core import hydra_config
-from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.multiprocessing as mp
+from blazefl.reproducibility import setup_reproducibility
+from hydra.core import hydra_config
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from algorithm import (
-    DSFLServerHandler,
     DSFLClientTrainer,
-    SCARLETServerHandler,
+    DSFLServerHandler,
     SCARLETClientTrainer,
+    SCARLETServerHandler,
 )
-from pipeline import DSFLPipeline, SCARLETPipeline
 from dataset import CommonPartitionedDataset
 from models.selector import CommonModelSelector
+from pipeline import DSFLPipeline, SCARLETPipeline
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
@@ -41,7 +41,7 @@ def main(cfg: DictConfig) -> None:
         device = "mps"
     logging.info(f"device: {device}")
 
-    seed_everything(cfg.seed, device=device)
+    setup_reproducibility(cfg.seed)
 
     dataset = CommonPartitionedDataset(
         root=dataset_root_dir,
@@ -54,7 +54,7 @@ def main(cfg: DictConfig) -> None:
         dir_alpha=cfg.dir_alpha,
         public_size=cfg.public_size,
     )
-    model_selector = CommonModelSelector(num_classes=dataset.num_classes)
+    model_selector = CommonModelSelector(num_classes=dataset.num_classes, seed=cfg.seed)
 
     handler_args = {
         "model_selector": model_selector,
@@ -121,9 +121,7 @@ def main(cfg: DictConfig) -> None:
     try:
         pipeline.main()
     except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt: Stopping the pipeline.")
-    except Exception as e:
-        logging.exception(f"An error occurred: {e}")
+        logging.info("KeyboardInterrupt")
 
 
 if __name__ == "__main__":

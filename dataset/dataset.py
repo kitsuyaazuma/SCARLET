@@ -2,15 +2,15 @@ from collections.abc import Sized
 from enum import StrEnum
 from pathlib import Path
 
-from blazefl.core import PartitionedDataset
-from blazefl.utils import FilteredDataset
 import torch
 import torchvision
-from torchvision import transforms
+from blazefl.core import FilteredDataset, PartitionedDataset
+from blazefl.reproducibility import create_rng_suite
 from torch.utils.data import DataLoader, Dataset
-from sklearn.model_selection import train_test_split
+from torchvision import transforms
 
 from dataset.functional import balance_split, client_inner_dirichlet_partition_faster
+from dataset.transforms import GeneratorRandomCrop, GeneratorRandomHorizontalFlip
 
 
 class PrivateTask(StrEnum):
@@ -21,7 +21,13 @@ class PublicTask(StrEnum):
     CIFAR100 = "cifar100"
 
 
-class CommonPartitionedDataset(PartitionedDataset):
+class CommonPartitionType(StrEnum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+    TEST = "test"
+
+
+class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
     def __init__(
         self,
         root: Path,
@@ -43,11 +49,16 @@ class CommonPartitionedDataset(PartitionedDataset):
         self.partition = partition
         self.dir_alpha = dir_alpha
         self.public_size = public_size
+
+        self.rng_suite = create_rng_suite(seed)
+
         self.train_transform = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomCrop(32, padding=4),
+                GeneratorRandomHorizontalFlip(
+                    p=0.5, generator=self.rng_suite.torch_cpu
+                ),
+                GeneratorRandomCrop(32, padding=4, generator=self.rng_suite.torch_cpu),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -57,12 +68,12 @@ class CommonPartitionedDataset(PartitionedDataset):
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
-        self.target_transform = None
 
         self._preprocess()
 
     def _preprocess(self):
         self.root.mkdir(parents=True, exist_ok=True)
+        assert self.private_task != self.public_task
         match self.private_task:
             case PrivateTask.CIFAR10:
                 private_dataset = torchvision.datasets.CIFAR10(
@@ -77,7 +88,6 @@ class CommonPartitionedDataset(PartitionedDataset):
                 )
             case _:
                 raise ValueError(f"Invalid private task: {self.private_task}")
-        assert self.private_task != self.public_task
         match self.public_task:
             case PublicTask.CIFAR100:
                 public_dataset = torchvision.datasets.CIFAR100(
@@ -88,8 +98,8 @@ class CommonPartitionedDataset(PartitionedDataset):
             case _:
                 raise ValueError(f"Invalid public task: {self.public_task}")
 
-        for type_ in ["private", "public", "test"]:
-            self.path.joinpath(type_).mkdir(parents=True)
+        for type_ in CommonPartitionType:
+            self.path.joinpath(type_.value).mkdir(parents=True)
 
         match self.partition:
             case "dirichlet":
@@ -106,6 +116,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                             num_samples=len(private_dataset.targets),
                         ),
                         verbose=False,
+                        numpy_rng=self.rng_suite.numpy,
                     )
                 )
                 test_client_dict, _ = client_inner_dirichlet_partition_faster(
@@ -119,6 +130,7 @@ class CommonPartitionedDataset(PartitionedDataset):
                     ),
                     class_priors=class_priors,
                     verbose=False,
+                    numpy_rng=self.rng_suite.numpy,
                 )
             case _:
                 raise ValueError(f"Invalid partition: {self.partition}")
@@ -129,10 +141,10 @@ class CommonPartitionedDataset(PartitionedDataset):
                 private_dataset.data,
                 private_dataset.targets,
                 transform=self.train_transform,
-                target_transform=self.target_transform,
             )
             torch.save(
-                client_private_dataset, self.path.joinpath("private", f"{cid}.pkl")
+                client_private_dataset,
+                self.path.joinpath(CommonPartitionType.PRIVATE, f"{cid}.pkl"),
             )
 
         for cid, indices in test_client_dict.items():
@@ -141,23 +153,24 @@ class CommonPartitionedDataset(PartitionedDataset):
                 test_dataset.data,
                 test_dataset.targets,
                 transform=self.test_transform,
-                target_transform=self.target_transform,
             )
-            torch.save(client_test_dataset, self.path.joinpath("test", f"{cid}.pkl"))
+            torch.save(
+                client_test_dataset,
+                self.path.joinpath(CommonPartitionType.TEST, f"{cid}.pkl"),
+            )
 
-        public_indices, _ = train_test_split(
-            range(len(public_dataset)),
-            test_size=1 - self.public_size / len(public_dataset),
+        public_indices = self.rng_suite.numpy.choice(
+            len(public_dataset),
+            size=self.public_size,
         )
         torch.save(
             FilteredDataset(
-                public_indices,
+                public_indices.tolist(),
                 public_dataset.data,
                 original_targets=None,
                 transform=self.train_transform,
-                target_transform=self.target_transform,
             ),
-            self.path.joinpath("public", "public.pkl"),
+            self.path.joinpath(CommonPartitionType.PUBLIC, "public.pkl"),
         )
 
         torch.save(
@@ -166,24 +179,23 @@ class CommonPartitionedDataset(PartitionedDataset):
                 test_dataset.data,
                 test_dataset.targets,
                 transform=self.test_transform,
-                target_transform=self.target_transform,
             ),
-            self.path.joinpath("test", "test.pkl"),
+            self.path.joinpath(CommonPartitionType.TEST, "test.pkl"),
         )
 
-    def get_dataset(self, type_: str, cid: int | None) -> Dataset:
+    def get_dataset(self, type_: CommonPartitionType, cid: int | None) -> Dataset:
         match type_:
-            case "private":
+            case CommonPartitionType.PRIVATE:
                 dataset = torch.load(
                     self.path.joinpath(type_, f"{cid}.pkl"),
                     weights_only=False,
                 )
-            case "public":
+            case CommonPartitionType.PUBLIC:
                 dataset = torch.load(
                     self.path.joinpath(type_, "public.pkl"),
                     weights_only=False,
                 )
-            case "test":
+            case CommonPartitionType.TEST:
                 if cid is not None:
                     dataset = torch.load(
                         self.path.joinpath(type_, f"{cid}.pkl"), weights_only=False
@@ -192,16 +204,37 @@ class CommonPartitionedDataset(PartitionedDataset):
                     dataset = torch.load(
                         self.path.joinpath(type_, "test.pkl"), weights_only=False
                     )
-            case _:
-                raise ValueError(f"Invalid dataset type: {type_}")
         assert isinstance(dataset, Dataset)
         return dataset
 
+    def set_dataset(
+        self, type_: CommonPartitionType, cid: int | None, dataset: Dataset
+    ) -> None:
+        match type_:
+            case CommonPartitionType.PRIVATE:
+                torch.save(dataset, self.path.joinpath(type_, f"{cid}.pkl"))
+            case CommonPartitionType.PUBLIC:
+                torch.save(dataset, self.path.joinpath(f"{type_}.pkl"))
+            case CommonPartitionType.TEST:
+                if cid is not None:
+                    torch.save(dataset, self.path.joinpath(type_, f"{cid}.pkl"))
+                else:
+                    torch.save(dataset, self.path.joinpath(type_, "default.pkl"))
+
     def get_dataloader(
-        self, type_: str, cid: int | None, batch_size: int | None = None
+        self,
+        type_: CommonPartitionType,
+        cid: int | None,
+        batch_size: int | None = None,
+        generator: torch.Generator | None = None,
     ) -> DataLoader:
         dataset = self.get_dataset(type_, cid)
         assert isinstance(dataset, Sized)
         batch_size = len(dataset) if batch_size is None else batch_size
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        data_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=type_ == CommonPartitionType.PRIVATE,
+            generator=generator,
+        )
         return data_loader

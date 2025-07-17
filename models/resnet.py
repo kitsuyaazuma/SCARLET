@@ -30,11 +30,9 @@ If you use this implementation in you work, please don't forget to mention the
 author, Yerlan Idelbayev.
 """
 
-from typing import Union
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-
 
 __all__ = [
     "ResNet",
@@ -50,13 +48,13 @@ __all__ = [
 def _weights_init(m):
     # classname = m.__class__.__name__
     # print(classname)
-    if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+    if isinstance(m, nn.Linear | nn.Conv2d):
         init.kaiming_normal_(m.weight)
 
 
 class LambdaLayer(nn.Module):
     def __init__(self, lambd):
-        super(LambdaLayer, self).__init__()
+        super().__init__()
         self.lambd = lambd
 
     def forward(self, x):
@@ -67,7 +65,7 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, in_planes, planes, stride=1, option="A"):
-        super(BasicBlock, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(
             in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
         )
@@ -77,7 +75,7 @@ class BasicBlock(nn.Module):
         )
         self.bn2 = nn.BatchNorm2d(planes)
 
-        self.shortcut: Union[nn.Sequential, LambdaLayer] = nn.Sequential()
+        self.shortcut: nn.Sequential | LambdaLayer = nn.Sequential()
         if stride != 1 or in_planes != planes:
             if option == "A":
                 """
@@ -113,7 +111,7 @@ class BasicBlock(nn.Module):
 
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10):
-        super(ResNet, self).__init__()
+        super().__init__()
         self.in_planes = 16
 
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)

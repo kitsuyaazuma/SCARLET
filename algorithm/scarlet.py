@@ -6,6 +6,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import NamedTuple
 
+import torch
 from blazefl.core import (
     ParallelClientTrainer,
     ServerHandler,
@@ -14,14 +15,13 @@ from blazefl.utils import (
     RandomState,
     seed_everything,
 )
-import torch
 from torch.utils.data import DataLoader, Subset
 
 from algorithm.dsfl import (
-    DSFLClientState,
-    DSFLServerHandler,
-    DSFLClientTrainer,
     DiskSharedData,
+    DSFLClientState,
+    DSFLClientTrainer,
+    DSFLServerHandler,
 )
 from dataset import CommonPartitionedDataset
 from models import CommonModelSelector
@@ -194,7 +194,7 @@ class SCARLETServerHandler(ServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPa
         self, indices: list[int], soft_labels: list[torch.Tensor]
     ) -> list[CacheSignal]:
         cache_signals = []
-        for i, soft_label in zip(indices, soft_labels):
+        for i, soft_label in zip(indices, soft_labels, strict=False):
             if self.global_cache[i].soft_label is None:
                 self.global_cache[i] = GlobalCacheEntry(
                     soft_label=soft_label, round=self.round
@@ -414,7 +414,9 @@ class SCARLETClientTrainer(
     ) -> tuple[list[LocalCacheEntry], list[torch.Tensor]]:
         global_soft_labels_queue = deque(torch.unbind(global_soft_labels, dim=0))
         restored_global_soft_labels = []
-        for i, cache_signal in zip(global_indices, cache_signals.tolist()):
+        for i, cache_signal in zip(
+            global_indices, cache_signals.tolist(), strict=False
+        ):
             match cache_signal:
                 case CacheSignal.CACHED.value:
                     restored_global_soft_labels.append(local_cache[i].soft_label)

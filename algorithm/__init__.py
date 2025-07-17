@@ -1,5 +1,5 @@
-from algorithm.dsfl import DSFLServerHandler, DSFLClientTrainer
-from algorithm.scarlet import SCARLETServerHandler, SCARLETClientTrainer
+from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
+from algorithm.scarlet import SCARLETClientTrainer, SCARLETServerHandler
 
 __all__ = [
     "DSFLServerHandler",
