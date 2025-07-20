@@ -331,11 +331,25 @@ class DSFLClientTrainer(
         self.stop_event = self.manager.Event()
         self.cache: list[DSFLProcessPoolUplinkPackage] = []
 
+        self.soft_labels_buffer = torch.zeros(
+            (1000, self.dataset.num_classes),
+            dtype=torch.float32,
+        )
+        self.indices_buffer = torch.zeros(1000, dtype=torch.int64)
+
     def progress_fn(
         self,
         it: list[ApplyResult],
     ) -> Iterable[ApplyResult]:
         return tqdm(it, desc="Client", leave=False)
+
+    def prepare_uplink_package_buffer(self) -> DSFLProcessPoolUplinkPackage:
+        return DSFLProcessPoolUplinkPackage(
+            cid=-1,
+            soft_labels=self.soft_labels_buffer.clone(),
+            indices=self.indices_buffer.clone(),
+            metadata={"acc": 0.0, "loss": 0.0},
+        )
 
     @staticmethod
     def worker(

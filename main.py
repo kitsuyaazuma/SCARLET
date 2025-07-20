@@ -18,7 +18,7 @@ from algorithm import (
 )
 from dataset import CommonPartitionedDataset
 from models.selector import CommonModelSelector
-from pipeline import DSFLPipeline, SCARLETPipeline
+from pipeline import CommonPipeline
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
@@ -68,6 +68,7 @@ def main(cfg: DictConfig) -> None:
         "public_size_per_round": cfg.public_size_per_round,
         "device": device,
         "sample_ratio": cfg.sample_ratio,
+        "seed": cfg.seed,
     }
     trainer_args = {
         "model_selector": model_selector,
@@ -87,6 +88,8 @@ def main(cfg: DictConfig) -> None:
         "num_parallels": cfg.num_parallels,
     }
 
+    handler: DSFLServerHandler | SCARLETServerHandler | None = None
+    trainer: DSFLClientTrainer | SCARLETClientTrainer | None = None
     match cfg.algorithm.name:
         case "dsfl":
             handler = DSFLServerHandler(
@@ -95,11 +98,6 @@ def main(cfg: DictConfig) -> None:
             )
             trainer = DSFLClientTrainer(
                 **trainer_args,
-            )
-            pipeline = DSFLPipeline(
-                handler=handler,
-                trainer=trainer,
-                writer=writer,
             )
         case "scarlet":
             handler = SCARLETServerHandler(
@@ -110,15 +108,15 @@ def main(cfg: DictConfig) -> None:
             trainer = SCARLETClientTrainer(
                 **trainer_args,
             )
-            pipeline = SCARLETPipeline(
-                handler=handler,
-                trainer=trainer,
-                writer=writer,
-            )
         case _:
             raise ValueError(f"Invalid algorithm: {cfg.algorithm.name}")
 
     try:
+        pipeline = CommonPipeline(
+            handler=handler,
+            trainer=trainer,
+            writer=writer,
+        )
         pipeline.main()
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt")

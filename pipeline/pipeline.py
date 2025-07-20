@@ -1,15 +1,27 @@
 import logging
+from typing import Protocol, TypeVar
 
+from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
+
+class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
+    round: int
+
+    def get_summary(self) -> dict[str, float]: ...
 
 
-class DSFLPipeline:
+CommonServerHandler = TypeVar(
+    "CommonServerHandler", bound=SummarizableBaseServerHandler
+)
+CommonClientTrainer = TypeVar("CommonClientTrainer", bound=ProcessPoolClientTrainer)
+
+
+class CommonPipeline:
     def __init__(
         self,
-        handler: DSFLServerHandler,
-        trainer: DSFLClientTrainer,
+        handler: CommonServerHandler,
+        trainer: CommonClientTrainer,
         writer: SummaryWriter,
     ) -> None:
         self.handler = handler
@@ -18,6 +30,7 @@ class DSFLPipeline:
 
     def main(self) -> None:
         while not self.handler.if_stop():
+            assert hasattr(self.handler, "round")
             round_ = self.handler.round
             # server side
             sampled_clients = self.handler.sample_clients()

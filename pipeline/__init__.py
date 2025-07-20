@@ -1,7 +1,5 @@
-from pipeline.dsfl import DSFLPipeline
-from pipeline.scarlet import SCARLETPipeline
+from pipeline.pipeline import CommonPipeline
 
 __all__ = [
-    "DSFLPipeline",
-    "SCARLETPipeline",
+    "CommonPipeline",
 ]
