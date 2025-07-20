@@ -159,8 +159,13 @@ class SCARLETServerHandler(
         soft_labels_stack: defaultdict[int, list[torch.Tensor]] = defaultdict(
             list[torch.Tensor]
         )
-        for soft_labels, indices in zip(soft_labels_list, indices_list, strict=True):
-            for soft_label, index in zip(soft_labels, indices, strict=True):
+        for i, (soft_labels, indices) in enumerate(
+            zip(soft_labels_list, indices_list, strict=True)
+        ):
+            num_samples = self.metadata_list[i]["num_samples"]
+            for soft_label, index in zip(
+                soft_labels[:num_samples], indices[:num_samples], strict=True
+            ):
                 soft_labels_stack[int(index.item())].append(soft_label)
 
         global_soft_labels: list[torch.Tensor] = []
@@ -361,7 +366,7 @@ class SCARLETClientTrainer(
             cid=-1,
             soft_labels=self.soft_labels_buffer.clone(),
             indices=self.indices_buffer.clone(),
-            metadata={"acc": 0.0, "loss": 0.0},
+            metadata={"acc": 0.0, "loss": 0.0, "num_samples": 0},
         )
 
     @staticmethod
@@ -472,11 +477,12 @@ class SCARLETClientTrainer(
             device=device,
         )
 
+        num_samples = soft_labels.shape[0]
         package = SCARLETProcessPoolUplinkPackage(
             cid=config.cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
-            metadata={"loss": loss, "acc": acc},
+            metadata={"loss": loss, "acc": acc, "num_samples": num_samples},
         )
         assert (
             shm_buffer is not None
@@ -485,8 +491,8 @@ class SCARLETClientTrainer(
             and isinstance(package.soft_labels, torch.Tensor)
             and isinstance(package.indices, torch.Tensor)
         )
-        shm_buffer.soft_labels.copy_(package.soft_labels)
-        shm_buffer.indices.copy_(package.indices)
+        shm_buffer.soft_labels[:num_samples].copy_(package.soft_labels)
+        shm_buffer.indices[:num_samples].copy_(package.indices)
         package.soft_labels = SHMHandle()
         package.indices = SHMHandle()
 
