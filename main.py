@@ -86,6 +86,7 @@ def main(cfg: DictConfig) -> None:
         "kd_batch_size": cfg.kd_batch_size,
         "kd_lr": cfg.kd_lr,
         "num_parallels": cfg.num_parallels,
+        "public_size_per_round": cfg.public_size_per_round,
     }
 
     handler: DSFLServerHandler | SCARLETServerHandler | None = None

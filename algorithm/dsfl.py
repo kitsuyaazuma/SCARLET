@@ -305,6 +305,7 @@ class DSFLClientTrainer(
         kd_lr: float,
         seed: int,
         num_parallels: int,
+        public_size_per_round: int,
     ) -> None:
         self.model_selector = model_selector
         self.model_name = CommonModelName(model_name)
@@ -332,10 +333,10 @@ class DSFLClientTrainer(
         self.cache: list[DSFLProcessPoolUplinkPackage] = []
 
         self.soft_labels_buffer = torch.zeros(
-            (1000, self.dataset.num_classes),
+            (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
-        self.indices_buffer = torch.zeros(1000, dtype=torch.int64)
+        self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
 
     def progress_fn(
         self,
