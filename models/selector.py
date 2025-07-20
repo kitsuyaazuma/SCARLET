@@ -19,7 +19,7 @@ class CommonModelSelector(ModelSelector[CommonModelName]):
         self.seed = seed
 
     def select_model(self, model_name: CommonModelName) -> nn.Module:
-        with torch.random.fork_rng():
+        with torch.random.fork_rng(devices=[]):
             torch.manual_seed(self.seed)
             match model_name:
                 case CommonModelName.RESNET20:
