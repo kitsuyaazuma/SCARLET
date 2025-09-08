@@ -2,7 +2,3 @@ name: "scarlet"
 era_exponent: 1.0
 cache_ratio: 1.0
 cache_duration: 50
-cache_strategy: "eager"
-distance_strategy: "random"
-history_maxlen: 4
-history_minlen: 2

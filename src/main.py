@@ -113,12 +113,8 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
                 public_size_per_round=cfg.public_size_per_round,
                 dataset=partitioned_dataset,
                 era_exponent=cfg.algorithm.era_exponent,
-                history_maxlen=cfg.algorithm.history_maxlen,
-                history_minlen=cfg.algorithm.history_minlen,
                 cache_ratio=cfg.algorithm.cache_ratio,
                 cache_duration=cfg.algorithm.cache_duration,
-                cache_strategy=cfg.algorithm.cache_strategy,
-                distance_strategy=cfg.algorithm.distance_strategy,
             )
             trainer = SCARLETParallelClientTrainer(
                 model_name=cfg.client_model,

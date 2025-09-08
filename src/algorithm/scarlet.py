@@ -177,12 +177,8 @@ class SCARLETServerHandler(DSFLServerHandler):
         public_size_per_round: int,
         dataset: PartitionedDataset,
         era_exponent: float,
-        history_maxlen: int,
-        history_minlen: int,
         cache_ratio: float,
         cache_duration: int,
-        cache_strategy: str,
-        distance_strategy: str,
     ):
         super(DSFLServerHandler, self).__init__(
             model_name, global_round, sample_ratio, cuda, public_size_per_round, dataset
@@ -192,18 +188,10 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.next_public_indices = torch.empty(0)
         self.new_cache = torch.empty(0)
         self.era_exponent = era_exponent
-        self.history_maxlen = history_maxlen
-        self.history_minlen = history_minlen
         self.cache_ratio = cache_ratio
         self.cache_duration = cache_duration
-        self.cache_strategy = cache_strategy
-        self.distance_strategy = distance_strategy
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, round=0) for _ in range(self.dataset.public_size)
-        ]
-        self.history: list[deque] = [
-            deque([], maxlen=self.history_maxlen)
-            for _ in range(self.dataset.public_size)
         ]
         self.set_next_public_indices()
 
@@ -249,19 +237,8 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
-        # update cache and history
-        if self.distance_strategy == "kl":
-            distances, cache_threshold = self.get_cache_threshold(
-                public_probs, public_indices
-            )
-            new_cache = self.update_cache(
-                public_probs, public_indices, distances, cache_threshold
-            )
-            self.update_history(public_probs, public_indices, new_cache)
-        elif self.distance_strategy == "random":
-            new_cache = self.update_cache_random(public_probs, public_indices)
-        else:
-            raise ValueError(f"Unknown distance strategy: {self.distance_strategy}")
+        # update cache
+        new_cache = self.update_cache(public_probs, public_indices)
 
         # update global model
         self.model.train()
@@ -300,84 +277,13 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         self.set_next_public_indices()
 
-    def calculate_distance(self, i: int, prob: torch.Tensor) -> float:
-        prob_history = self.history[i]
-        if len(prob_history) < self.history_minlen:  # Not enough history
-            return np.inf
-
-        ema_prob = exponential_moving_average(list(reversed(prob_history)))
-        distance = F.kl_div(
-            F.log_softmax(prob, dim=0),
-            F.softmax(ema_prob, dim=0),
-            reduction="batchmean",
-        ).item()
-        return distance
-
-    def get_cache_threshold(self, probs: list[torch.Tensor], indices: list[int]):
-        distances: list[float] = []
-        for i, prob in zip(indices, probs):
-            distances.append(self.calculate_distance(i, prob))
-        if distances.count(np.inf) == len(distances):
-            return distances, 0.0
-
-        candidate_distances = []
-        match self.cache_strategy:
-            case "eager":
-                for index, distance in zip(indices, distances):
-                    if self.cache[index].prob is None and distance != np.inf:
-                        candidate_distances.append(distance)
-            case "const" | "scheduled":
-                for index, distance in zip(indices, distances):
-                    if distance != np.inf:
-                        candidate_distances.append(distance)
-            case _:
-                raise ValueError(f"Unknown cache strategy: {self.cache_strategy}")
-
-        threshold = torch.quantile(
-            torch.tensor(candidate_distances), self.cache_ratio
-        ).item()
-        return distances, threshold
-
     def update_cache(
-        self,
-        probs: list[torch.Tensor],
-        indices: list[int],
-        distances: list[float],
-        threshold: float,
-    ) -> list[CacheType]:
-        new_cache = []
-        for i, prob, distance in zip(indices, probs, distances):
-            if distance == np.inf:  # Not enough history
-                new_cache.append(CacheType.NOT_HIT)
-            elif self.cache[i].prob is None:  # Not cached
-                if distance < threshold:  # Similar to history
-                    self.cache[i] = ServerCache(prob=prob, round=self.round)
-                    new_cache.append(CacheType.NEWLY_HIT)
-                else:  # Not similar to history
-                    new_cache.append(CacheType.NOT_HIT)
-            else:  # Already cached
-                if (
-                    self.round - self.cache[i].round <= self.cache_duration
-                ):  # Cache is still valid
-                    new_cache.append(CacheType.ALREADY_HIT)
-                else:  # Cache is expired
-                    self.cache[i] = ServerCache(prob=None, round=self.round)
-                    new_cache.append(CacheType.EXPIRED)
-        return new_cache
-
-    def update_cache_random(
         self, probs: list[torch.Tensor], indices: list[int]
     ) -> list[CacheType]:
         candidate_indices = []
         for i in indices:
-            match self.cache_strategy:
-                case "eager":
-                    if self.cache[i].prob is None:
-                        candidate_indices.append(i)
-                case "const" | "scheduled":
-                    candidate_indices.append(i)
-                case _:
-                    raise ValueError(f"Unknown cache strategy: {self.cache_strategy}")
+            if self.cache[i].prob is None:
+                candidate_indices.append(i)
         selected_indices = np.random.choice(
             candidate_indices,
             int(self.cache_ratio * len(candidate_indices)),
@@ -398,20 +304,6 @@ class SCARLETServerHandler(DSFLServerHandler):
                     self.cache[i] = ServerCache(prob=None, round=self.round)
                     new_cache.append(CacheType.EXPIRED)
         return new_cache
-
-    def update_history(
-        self, probs: list[torch.Tensor], indices: list[int], new_cache: list[CacheType]
-    ) -> None:
-        for i, prob, cache in zip(indices, probs, new_cache):
-            match cache:
-                case CacheType.ALREADY_HIT:
-                    pass
-                case CacheType.NEWLY_HIT | CacheType.NOT_HIT:
-                    self.history[i].append(prob)
-                case CacheType.EXPIRED:
-                    self.history[i].clear()
-                    self.history[i].append(prob)
-        return
 
     @property
     def downlink_package(self) -> list[torch.Tensor]:
