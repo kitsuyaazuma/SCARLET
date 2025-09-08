@@ -26,7 +26,9 @@ class BasePipeline:
 
     def _post_init__(self):
         self.round = 0
-        self.cost = 0.0
+        self.cumulative_cost = 0.0
+        self.uplink_cost = 0.0
+        self.downlink_cost = 0.0
 
     def get_byte_size(self, tensor: torch.Tensor) -> int:
         return tensor.element_size() * tensor.nelement()
@@ -46,18 +48,22 @@ class DSFLPipeline(BasePipeline):
             sampled_clients = self.handler.sample_clients()
             broadcast = self.handler.downlink_package
 
+            downlink_cost = 0.0
             for b in broadcast:
                 if isinstance(b, torch.Tensor):
-                    self.cost += self.get_byte_size(b) * len(sampled_clients)
+                    downlink_cost += self.get_byte_size(b) * len(sampled_clients)
+            self.cumulative_cost += downlink_cost
 
             self.trainer.local_process(payload=broadcast, id_list=sampled_clients)
             uploads = self.trainer.uplink_package
 
+            uplink_cost = 0.0
             for pack in uploads:
                 self.handler.load(pack)
                 for p in pack:
                     if isinstance(p, torch.Tensor):
-                        self.cost += self.get_byte_size(p)
+                        uplink_cost += self.get_byte_size(p)
+            self.cumulative_cost += uplink_cost
 
             server_loss, server_top1_acc, server_top5_acc = self.handler.evaluate()
             server_acc = (
@@ -68,9 +74,16 @@ class DSFLPipeline(BasePipeline):
             logging.info(
                 f"Round {self.round:>3}, Loss {server_loss:.4f}, "
                 f"Test Accuracy {server_acc:.4f}, "
-                f"Cost {(self.cost / (1024**3)):.4f} GB"
+                f"Cost {(self.cumulative_cost / (1024**3)):.4f} GB"
             )
-            self.writer.add_scalar("Cost", self.cost, self.round)
+            logging.info(
+                f"Uplink {(uplink_cost / (1024**2)):.4f} MB, "
+                f"Downlink {(downlink_cost / (1024**2)): 4f} MB"
+            )
+            self.writer.add_scalar("Cost", self.cumulative_cost, self.round)
+            self.writer.add_scalar("Uplink", uplink_cost, self.round)
+            self.writer.add_scalar("Downlink", downlink_cost, self.round)
+
             self.writer.add_scalar("Loss/Server", server_loss, self.round)
             self.writer.add_scalar("Top1Accuracy/Server", server_top1_acc, self.round)
             self.writer.add_scalar("Top5Accuracy/Server", server_top5_acc, self.round)
@@ -95,28 +108,32 @@ class COMETPipeline(DSFLPipeline):
             sampled_clients = self.handler.sample_clients()
             broadcast = self.handler.downlink_package
 
+            downlink_cost = 0.0
             for i, b in enumerate(broadcast):
                 if isinstance(b, torch.Tensor):
                     if self.handler.sample_ratio == 1.0 and i == 0:
                         # NOTE: When sample_ratio is 1.0, we can determine the best
                         # centroid also on the server side.
                         # For fair comparison, devide the cost by the number of clusters
-                        self.cost += (
+                        downlink_cost += (
                             self.get_byte_size(b)
                             * len(sampled_clients)
                             / self.handler.num_clusters
                         )
                     else:
-                        self.cost += self.get_byte_size(b) * len(sampled_clients)
+                        downlink_cost += self.get_byte_size(b) * len(sampled_clients)
+            self.cumulative_cost += downlink_cost
 
             self.trainer.local_process(payload=broadcast, id_list=sampled_clients)
             uploads = self.trainer.uplink_package
 
+            uplink_cost = 0.0
             for pack in uploads:
                 self.handler.load(pack)
                 for p in pack:
                     if isinstance(p, torch.Tensor):
-                        self.cost += self.get_byte_size(p)
+                        uplink_cost += self.get_byte_size(p)
+            self.cumulative_cost += uplink_cost
 
             server_loss, server_top1_acc, server_top5_acc = self.handler.evaluate()
             server_acc = (
@@ -127,9 +144,15 @@ class COMETPipeline(DSFLPipeline):
             logging.info(
                 f"Round {self.round:>3}, Loss {server_loss:.4f}, "
                 f"Test Accuracy {server_acc:.4f}, "
-                f"Cost {(self.cost / (1024**3)):.4f} GB"
+                f"Cost {(self.cumulative_cost / (1024**3)):.4f} GB"
             )
-            self.writer.add_scalar("Cost", self.cost, self.round)
+            logging.info(
+                f"Uplink {(uplink_cost / (1024**2)):.4f} MB, "
+                f"Downlink {(downlink_cost / (1024**2)): 4f} MB"
+            )
+            self.writer.add_scalar("Cost", self.cumulative_cost, self.round)
+            self.writer.add_scalar("Uplink", uplink_cost, self.round)
+            self.writer.add_scalar("Downlink", downlink_cost, self.round)
             self.writer.add_scalar("Loss/Server", server_loss, self.round)
             self.writer.add_scalar("Top1Accuracy/Server", server_top1_acc, self.round)
             self.writer.add_scalar("Top5Accuracy/Server", server_top5_acc, self.round)
