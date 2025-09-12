@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 import enum
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, override
 import torch
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -41,6 +41,17 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
     def set_cache(self, new_cache: torch.Tensor):
         self.new_cache_list = new_cache.tolist()
 
+    def update_cache(
+        self, indices: torch.Tensor, probs: torch.Tensor, stale_indices: torch.Tensor
+    ):
+        if stale_indices.numel() != 0:
+            for index in stale_indices:
+                self.cache[index.item()] = None
+        if indices.numel() == 0 or probs.numel() == 0:
+            for index, prob in zip(indices, probs):
+                self.cache[index.item()] = prob
+        self.save_dict["cache"] = self.cache
+
     def distill(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
         if public_probs.numel() != 0 and public_indices.numel() != 0:
             public_probs_queue = deque(torch.unbind(public_probs, dim=0))
@@ -73,8 +84,11 @@ def scarlet_client_worker(
     public_indices: torch.Tensor,
     next_indices: torch.Tensor,
     new_cache: torch.Tensor,
+    cache_update: list[torch.Tensor] | None,
 ) -> list[torch.Tensor]:
     process.prepare(device, client_id, dataset)
+    if cache_update is not None:
+        process.update_cache(cache_update[0], cache_update[1], cache_update[2])
     process.set_cache(new_cache)
     process.distill(public_probs, public_indices)
     process.train()
@@ -115,8 +129,13 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
             analysis_dir=analysis_dir,
         )
 
-    def local_process(self, payload: list, id_list: list[int]):
-        public_probs, public_indices, next_indices, new_cache = payload
+    def local_process(  # type: ignore  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        payload: tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]],
+        id_list: list[int],
+    ):
+        public_probs, public_indices, next_indices, new_cache = payload[0]
+        cache_update_by_client = payload[1]
 
         public_probs.share_memory_()
         public_indices.share_memory_()
@@ -136,6 +155,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
                     public_indices,
                     next_indices,
                     new_cache,
+                    cache_update_by_client.get(client_id, None),
                 ),
             )
             for client_id in id_list
@@ -148,23 +168,6 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
 class ServerCache(NamedTuple):
     prob: Optional[torch.Tensor]
     round: int
-
-
-def exponential_moving_average(
-    tensors: list[torch.Tensor], alpha: Optional[float] = None
-) -> torch.Tensor:
-    """Exponential Moving Average
-
-    Args:
-        tensors (list[torch.Tensor]): list of tensors (latest to oldest)
-        alpha (float, optional): smoothing factor. Defaults to 1 / (len(tensors) + 1).
-    """
-    if alpha is None:
-        alpha = 1 / (len(tensors) + 1)
-    ema_tensor = tensors[0].detach()
-    for i in range(1, len(tensors)):
-        ema_tensor = ema_tensor * (1 - alpha) + tensors[i].detach() * alpha
-    return ema_tensor
 
 
 class SCARLETServerHandler(DSFLServerHandler):
@@ -193,7 +196,18 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, round=0) for _ in range(self.dataset.public_size)
         ]
+        self.client_mock_caches = [
+            [None for _ in range(self.dataset.public_size)]
+            for _ in range(self.dataset.num_clients)
+        ]
+        self.cache_update_by_client: dict[int, list[torch.Tensor]] = {}
+        self.sampled_clients: list[int] = []
         self.set_next_public_indices()
+
+    @override
+    def sample_clients(self):
+        self.sampled_clients = super().sample_clients()
+        return self.sampled_clients
 
     def set_next_public_indices(self) -> None:
         super().set_next_public_indices()
@@ -210,7 +224,7 @@ class SCARLETServerHandler(DSFLServerHandler):
                 next_request_indices.append(i)
         self.next_public_indices = torch.tensor(next_request_indices)
 
-    def global_update(self, buffer: list) -> None:  # noqa: C901
+    def global_update(self, buffer: list[list[torch.Tensor]]) -> None:  # noqa: C901
         probs_list = [ele[0] for ele in buffer]
         indices_list = [ele[1] for ele in buffer]
 
@@ -223,10 +237,10 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         public_probs: list[torch.Tensor] = []
         public_indices: list[int] = []
-        for indice, probs in public_probs_stack.items():
-            public_indices.append(indice)
-            mean_prob = torch.stack(probs).mean(dim=0).cpu()
-            # Entropy Reduction Aggregation
+        for index, probs_by_index in public_probs_stack.items():
+            public_indices.append(index)
+            mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
+            # Enhanced Entropy Reduction Aggregation
             era_prob = mean_prob**self.era_exponent / torch.sum(
                 mean_prob**self.era_exponent
             )
@@ -237,8 +251,42 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
+        # calculate cache difference for each selected client
+        self.cache_update_by_client = {}
+        for client_id in self.sampled_clients:
+            update_indices, update_probs, stale_indices = [], [], []
+            mock_cache = self.client_mock_caches[client_id]
+            for i in public_indices:
+                if mock_cache[i] is None and self.cache[i].prob is not None:
+                    update_indices.append(i)
+                    update_probs.append(self.cache[i].prob)
+                elif mock_cache[i] is not None and self.cache[i].prob is None:
+                    stale_indices.append(i)
+                elif mock_cache[i] is not None and self.cache[i].prob is not None:
+                    assert isinstance(mock_cache[i], torch.Tensor) and isinstance(
+                        self.cache[i].prob, torch.Tensor
+                    )
+                    if not torch.allclose(mock_cache[i], self.cache[i].prob):
+                        update_indices.append(i)
+                        update_probs.append(self.cache[i].prob)
+
+            self.cache_update_by_client[client_id] = [
+                torch.tensor(update_indices)
+                if len(update_indices) > 0
+                else torch.empty(0),
+                torch.stack(update_probs) if len(update_probs) > 0 else torch.empty(0),
+                torch.tensor(stale_indices)
+                if len(stale_indices) > 0
+                else torch.empty(0),
+            ]
+
         # update cache
         new_cache = self.update_cache(public_probs, public_indices)
+
+        # keep cache up-to-date for each selected client
+        for client_id in self.sampled_clients:
+            for i in public_indices:
+                self.client_mock_caches[client_id][i] = self.cache[i].prob
 
         # update global model
         self.model.train()
@@ -275,8 +323,6 @@ class SCARLETServerHandler(DSFLServerHandler):
             self.public_probs = torch.stack(not_already_cached_probs)
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
-        self.set_next_public_indices()
-
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
     ) -> list[CacheType]:
@@ -306,7 +352,9 @@ class SCARLETServerHandler(DSFLServerHandler):
         return new_cache
 
     @property
-    def downlink_package(self) -> list[torch.Tensor]:
+    def downlink_package(  # type: ignore  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+    ) -> tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]]:
         downlink_package = super().downlink_package
         downlink_package.append(self.new_cache)
-        return downlink_package
+        return downlink_package, self.cache_update_by_client

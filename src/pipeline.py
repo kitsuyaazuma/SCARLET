@@ -66,35 +66,93 @@ class DSFLPipeline(BasePipeline):
             self.cumulative_cost += uplink_cost
 
             server_loss, server_top1_acc, server_top5_acc = self.handler.evaluate()
-            server_acc = (
-                server_top5_acc
-                if self.trainer.dataset.private_task == "cifar100"
-                else server_top1_acc
+            self.log_and_save_metrics(
+                server_loss,
+                server_top1_acc,
+                server_top5_acc,
+                self.cumulative_cost,
+                uplink_cost,
+                downlink_cost,
+                self.round,
             )
-            logging.info(
-                f"Round {self.round:>3}, Loss {server_loss:.4f}, "
-                f"Test Accuracy {server_acc:.4f}, "
-                f"Cost {(self.cumulative_cost / (1024**3)):.4f} GB"
-            )
-            logging.info(
-                f"Uplink {(uplink_cost / (1024**2)):.4f} MB, "
-                f"Downlink {(downlink_cost / (1024**2)): 4f} MB"
-            )
-            self.writer.add_scalar("Cost", self.cumulative_cost, self.round)
-            self.writer.add_scalar("Uplink", uplink_cost, self.round)
-            self.writer.add_scalar("Downlink", downlink_cost, self.round)
-
-            self.writer.add_scalar("Loss/Server", server_loss, self.round)
-            self.writer.add_scalar("Top1Accuracy/Server", server_top1_acc, self.round)
-            self.writer.add_scalar("Top5Accuracy/Server", server_top5_acc, self.round)
 
             self.round += 1
+
+    def log_and_save_metrics(
+        self,
+        server_loss,
+        server_top1_acc,
+        server_top5_acc,
+        cumulative_cost,
+        uplink_cost,
+        downlink_cost,
+        round,
+    ):
+        server_acc = (
+            server_top5_acc
+            if self.trainer.dataset.private_task == "cifar100"
+            else server_top1_acc
+        )
+        logging.info(
+            f"Round {round:>3}, Loss {server_loss:.4f}, "
+            f"Test Accuracy {server_acc:.4f}, "
+            f"Cost {(cumulative_cost / (1024**3)):.4f} GB"
+        )
+        logging.info(
+            f"Uplink {(uplink_cost / (1024**2)):.4f} MB, "
+            f"Downlink {(downlink_cost / (1024**2)): 4f} MB"
+        )
+        self.writer.add_scalar("Cost", cumulative_cost, round)
+        self.writer.add_scalar("Uplink", uplink_cost, round)
+        self.writer.add_scalar("Downlink", downlink_cost, round)
+        self.writer.add_scalar("Loss/Server", server_loss, round)
+        self.writer.add_scalar("Top1Accuracy/Server", server_top1_acc, round)
+        self.writer.add_scalar("Top5Accuracy/Server", server_top5_acc, round)
 
 
 @dataclass
 class SCARLETPipeline(DSFLPipeline):
     handler: SCARLETServerHandler
     trainer: SCARLETParallelClientTrainer
+
+    def main(self):
+        while self.handler.if_stop is False:
+            sampled_clients = self.handler.sample_clients()
+            broadcast = self.handler.downlink_package
+
+            downlink_cost = 0.0
+            for b in broadcast[0]:  # Common tensors
+                if isinstance(b, torch.Tensor):
+                    downlink_cost += self.get_byte_size(b) * len(sampled_clients)
+            for cid, ts in broadcast[1].items():  # Client-specific tensors
+                for t in ts:
+                    if isinstance(t, torch.Tensor):
+                        downlink_cost += self.get_byte_size(t)
+            self.cumulative_cost += downlink_cost
+
+            self.trainer.local_process(payload=broadcast, id_list=sampled_clients)
+            uploads = self.trainer.uplink_package
+
+            uplink_cost = 0.0
+            for pack in uploads:
+                self.handler.load(pack)
+                for p in pack:
+                    if isinstance(p, torch.Tensor):
+                        uplink_cost += self.get_byte_size(p)
+            self.cumulative_cost += uplink_cost
+
+            server_loss, server_top1_acc, server_top5_acc = self.handler.evaluate()
+            self.log_and_save_metrics(
+                server_loss,
+                server_top1_acc,
+                server_top5_acc,
+                self.cumulative_cost,
+                uplink_cost,
+                downlink_cost,
+                self.round,
+            )
+
+            self.round += 1
 
 
 @dataclass
@@ -136,26 +194,15 @@ class COMETPipeline(DSFLPipeline):
             self.cumulative_cost += uplink_cost
 
             server_loss, server_top1_acc, server_top5_acc = self.handler.evaluate()
-            server_acc = (
-                server_top5_acc
-                if self.trainer.dataset.private_task == "cifar100"
-                else server_top1_acc
+            self.log_and_save_metrics(
+                server_loss,
+                server_top1_acc,
+                server_top5_acc,
+                self.cumulative_cost,
+                uplink_cost,
+                downlink_cost,
+                self.round,
             )
-            logging.info(
-                f"Round {self.round:>3}, Loss {server_loss:.4f}, "
-                f"Test Accuracy {server_acc:.4f}, "
-                f"Cost {(self.cumulative_cost / (1024**3)):.4f} GB"
-            )
-            logging.info(
-                f"Uplink {(uplink_cost / (1024**2)):.4f} MB, "
-                f"Downlink {(downlink_cost / (1024**2)): 4f} MB"
-            )
-            self.writer.add_scalar("Cost", self.cumulative_cost, self.round)
-            self.writer.add_scalar("Uplink", uplink_cost, self.round)
-            self.writer.add_scalar("Downlink", downlink_cost, self.round)
-            self.writer.add_scalar("Loss/Server", server_loss, self.round)
-            self.writer.add_scalar("Top1Accuracy/Server", server_top1_acc, self.round)
-            self.writer.add_scalar("Top5Accuracy/Server", server_top5_acc, self.round)
 
             self.round += 1
 
