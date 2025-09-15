@@ -47,7 +47,7 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         if stale_indices.numel() != 0:
             for index in stale_indices:
                 self.cache[index.item()] = None
-        if indices.numel() == 0 or probs.numel() == 0:
+        if indices.numel() != 0 and probs.numel() != 0:
             for index, prob in zip(indices, probs):
                 self.cache[index.item()] = prob
         self.save_dict["cache"] = self.cache
