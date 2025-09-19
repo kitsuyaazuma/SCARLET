@@ -196,7 +196,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, round=0) for _ in range(self.dataset.public_size)
         ]
-        self.client_mock_caches = [
+        self.client_mock_caches: list[list[torch.Tensor | None]] = [
             [None for _ in range(self.dataset.public_size)]
             for _ in range(self.dataset.num_clients)
         ]
@@ -251,42 +251,8 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
-        # calculate cache difference for each selected client
-        self.cache_update_by_client = {}
-        for client_id in self.sampled_clients:
-            update_indices, update_probs, stale_indices = [], [], []
-            mock_cache = self.client_mock_caches[client_id]
-            for i in public_indices:
-                if mock_cache[i] is None and self.cache[i].prob is not None:
-                    update_indices.append(i)
-                    update_probs.append(self.cache[i].prob)
-                elif mock_cache[i] is not None and self.cache[i].prob is None:
-                    stale_indices.append(i)
-                elif mock_cache[i] is not None and self.cache[i].prob is not None:
-                    assert isinstance(mock_cache[i], torch.Tensor) and isinstance(
-                        self.cache[i].prob, torch.Tensor
-                    )
-                    if not torch.allclose(mock_cache[i], self.cache[i].prob):
-                        update_indices.append(i)
-                        update_probs.append(self.cache[i].prob)
-
-            self.cache_update_by_client[client_id] = [
-                torch.tensor(update_indices)
-                if len(update_indices) > 0
-                else torch.empty(0),
-                torch.stack(update_probs) if len(update_probs) > 0 else torch.empty(0),
-                torch.tensor(stale_indices)
-                if len(stale_indices) > 0
-                else torch.empty(0),
-            ]
-
         # update cache
         new_cache = self.update_cache(public_probs, public_indices)
-
-        # keep cache up-to-date for each selected client
-        for client_id in self.sampled_clients:
-            for i in public_indices:
-                self.client_mock_caches[client_id][i] = self.cache[i].prob
 
         # update global model
         self.model.train()
@@ -324,6 +290,38 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
         self.set_next_public_indices()
+        self.calculate_cache_diff()
+
+    def calculate_cache_diff(self) -> None:
+        # calculate cache difference for each selected client
+        self.cache_update_by_client = {}
+        for client_id in range(self.dataset.num_clients):
+            update_indices, stale_indices = [], []
+            update_probs: list[torch.Tensor] = []
+
+            mock_cache: list[torch.Tensor | None] = self.client_mock_caches[client_id]
+            for i in range(len(mock_cache)):
+                client_cache_prob = mock_cache[i]
+                server_cache_prob = self.cache[i].prob
+                if client_cache_prob is None and server_cache_prob is not None:
+                    update_indices.append(i)
+                    update_probs.append(server_cache_prob)
+                elif client_cache_prob is not None and server_cache_prob is None:
+                    stale_indices.append(i)
+                elif client_cache_prob is not None and server_cache_prob is not None:
+                    if not torch.allclose(client_cache_prob, server_cache_prob):
+                        update_indices.append(i)
+                        update_probs.append(server_cache_prob)
+
+            self.cache_update_by_client[client_id] = [
+                torch.tensor(update_indices)
+                if len(update_indices) > 0
+                else torch.empty(0),
+                torch.stack(update_probs) if len(update_probs) > 0 else torch.empty(0),
+                torch.tensor(stale_indices)
+                if len(stale_indices) > 0
+                else torch.empty(0),
+            ]
 
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
@@ -359,4 +357,11 @@ class SCARLETServerHandler(DSFLServerHandler):
     ) -> tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]]:
         downlink_package = super().downlink_package
         downlink_package.append(self.new_cache)
+
+        # keep mock cache up-to-date for each selected client
+        public_indices = downlink_package[1]
+        for client_id in self.sampled_clients:
+            for i in public_indices:
+                self.client_mock_caches[client_id][i] = self.cache[i].prob
+
         return downlink_package, self.cache_update_by_client
