@@ -323,6 +323,8 @@ class SCARLETServerHandler(DSFLServerHandler):
             self.public_probs = torch.stack(not_already_cached_probs)
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
+        self.set_next_public_indices()
+
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
     ) -> list[CacheType]:
