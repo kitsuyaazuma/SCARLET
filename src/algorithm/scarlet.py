@@ -290,9 +290,9 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
         self.set_next_public_indices()
-        self.calculate_cache_diff()
+        self.calculate_cache_diff(public_indices)
 
-    def calculate_cache_diff(self) -> None:
+    def calculate_cache_diff(self, public_indices: list[int]) -> None:
         # calculate cache difference for each selected client
         self.cache_update_by_client = {}
         for client_id in range(self.dataset.num_clients):
@@ -301,6 +301,8 @@ class SCARLETServerHandler(DSFLServerHandler):
 
             mock_cache: list[torch.Tensor | None] = self.client_mock_caches[client_id]
             for i in range(len(mock_cache)):
+                if i not in public_indices:
+                    continue
                 client_cache_prob = mock_cache[i]
                 server_cache_prob = self.cache[i].prob
                 if client_cache_prob is None and server_cache_prob is not None:
