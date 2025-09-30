@@ -157,6 +157,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
                     next_indices,
                     new_cache,
                     cache_update_by_client.get(client_id, None),
+                    self.round,
                 ),
             )
             for client_id in id_list
