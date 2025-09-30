@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 import enum
-from typing import NamedTuple, Optional, override
+from typing import NamedTuple, override
 import torch
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -29,7 +29,7 @@ class CacheType(enum.IntEnum):
 class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
     def prepare(self, device: str, client_id: int, dataset: PartitionedDataset):
         super().prepare(device, client_id, dataset)
-        self.cache: list[Optional[torch.Tensor]] = [
+        self.cache: list[torch.Tensor | None] = [
             None for _ in range(self.dataset.public_size)
         ]
         if self.state_dict_path.exists():
@@ -85,6 +85,7 @@ def scarlet_client_worker(
     next_indices: torch.Tensor,
     new_cache: torch.Tensor,
     cache_update: list[torch.Tensor] | None,
+    round: int | None = None,
 ) -> list[torch.Tensor]:
     process.prepare(device, client_id, dataset)
     if cache_update is not None:
@@ -96,7 +97,7 @@ def scarlet_client_worker(
         probs, indices = torch.empty(0), torch.empty(0)
     else:
         probs, indices = process.predict(next_indices)
-    process.evaluate()
+    process.evaluate(round)
     process.save()
     return [probs, indices]
 
@@ -166,7 +167,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
 
 
 class ServerCache(NamedTuple):
-    prob: Optional[torch.Tensor]
+    prob: torch.Tensor | None
     round: int
 
 

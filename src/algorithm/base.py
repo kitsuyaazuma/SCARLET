@@ -73,7 +73,7 @@ class BaseClientWorkerProcess:
         self.save_dict["model"] = self.model.state_dict()
         self.save_dict["optimizer"] = self.optimizer.state_dict()
 
-    def evaluate(self):
+    def evaluate(self, round: int | None = None):
         self.model.eval()
         loss_sum = 0.0
         top1_acc_sum = 0.0
@@ -103,7 +103,10 @@ class BaseClientWorkerProcess:
         top5_acc = top5_acc_sum / total
         with open(self.analysis_dir.joinpath(f"{self.client_id}.csv"), "a") as f:
             writer = csv.writer(f)
-            writer.writerow([loss, top1_acc, top5_acc])
+            row = [loss, top1_acc, top5_acc]
+            if round is not None:
+                row.append(round)
+            writer.writerow(row)
 
     def save(self):
         self.save_dict["random_state"] = get_random_state()
