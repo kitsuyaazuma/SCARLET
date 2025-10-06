@@ -253,6 +253,7 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
+        self.calculate_cache_diff(public_indices)
         # update cache
         new_cache = self.update_cache(public_probs, public_indices)
 
@@ -292,7 +293,6 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
         self.set_next_public_indices()
-        self.calculate_cache_diff(public_indices)
 
     def calculate_cache_diff(self, public_indices: list[int]) -> None:
         # calculate cache difference for each selected client
