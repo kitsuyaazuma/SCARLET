@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict, deque
 import enum
 from typing import NamedTuple, override
@@ -206,6 +207,16 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.sampled_clients: list[int] = []
         self.set_next_public_indices()
 
+        self.enable_instrumentation = (
+            os.environ.get("ENABLE_SCARLET_INSTRUMENTATION", "false").lower() == "true"
+        )
+        if self.enable_instrumentation:
+            print("[SCARLET] Instrumentation for soft-label disagreement is ENABLED.")
+            self.avg_variance: float = 0.0
+            self.avg_entropy_of_mean: float = 0.0
+            self.avg_client_entropy_mean: float = 0.0
+            self.avg_client_entropy_var: float = 0.0
+
     @override
     def sample_clients(self):
         self.sampled_clients = super().sample_clients()
@@ -236,6 +247,56 @@ class SCARLETServerHandler(DSFLServerHandler):
                 continue
             for prob, indice in zip(probs, indices):
                 public_probs_stack[indice.item()].append(prob)
+
+        if self.enable_instrumentation:
+            round_variances = []
+            round_avg_soft_label_entropies = []
+            round_client_entropy_means = []
+            round_client_entropy_vars = []
+
+            for _, client_probs_list in public_probs_stack.items():
+                if not client_probs_list:
+                    continue
+                client_probs_tensor = torch.stack(
+                    client_probs_list
+                )  # (num_clients, num_classes)
+
+                if client_probs_tensor.shape[0] <= 1:
+                    continue
+
+                variance_per_class = torch.var(client_probs_tensor, dim=0)
+                round_variances.append(variance_per_class.mean().item())
+
+                mean_prob = client_probs_tensor.mean(dim=0)
+                avg_soft_label_entropy = -torch.sum(
+                    mean_prob * torch.log(mean_prob + 1e-9)
+                )
+                round_avg_soft_label_entropies.append(avg_soft_label_entropy.item())
+
+                entropies = -torch.sum(
+                    client_probs_tensor * torch.log(client_probs_tensor + 1e-9), dim=1
+                )
+                round_client_entropy_means.append(entropies.mean().item())
+                round_client_entropy_vars.append(entropies.var().item())
+
+            self.avg_variance = (
+                float(np.mean(round_variances)) if round_variances else 0.0
+            )
+            self.avg_entropy_of_mean = (
+                float(np.mean(round_avg_soft_label_entropies))
+                if round_avg_soft_label_entropies
+                else 0.0
+            )
+            self.avg_client_entropy_mean = (
+                float(np.mean(round_client_entropy_means))
+                if round_client_entropy_means
+                else 0
+            )
+            self.avg_client_entropy_var = (
+                float(np.mean(round_client_entropy_vars))
+                if round_client_entropy_vars
+                else 0
+            )
 
         public_probs: list[torch.Tensor] = []
         public_indices: list[int] = []

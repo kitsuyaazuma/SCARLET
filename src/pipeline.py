@@ -154,6 +154,45 @@ class SCARLETPipeline(DSFLPipeline):
 
             self.round += 1
 
+    def log_and_save_metrics(
+        self,
+        server_loss,
+        server_top1_acc,
+        server_top5_acc,
+        cumulative_cost,
+        uplink_cost,
+        downlink_cost,
+        round,
+    ):
+        super().log_and_save_metrics(
+            server_loss,
+            server_top1_acc,
+            server_top5_acc,
+            cumulative_cost,
+            uplink_cost,
+            downlink_cost,
+            round,
+        )
+        if self.handler.enable_instrumentation:
+            self.writer.add_scalar(
+                "Disagreement/VarianceOfSoftLabels", self.handler.avg_variance, round
+            )
+            self.writer.add_scalar(
+                "Disagreement/EntropyOfMeanSoftLabel",
+                self.handler.avg_entropy_of_mean,
+                round,
+            )
+            self.writer.add_scalar(
+                "Disagreement/ClientEntropyMean",
+                self.handler.avg_client_entropy_mean,
+                round,
+            )
+            self.writer.add_scalar(
+                "Disagreement/ClientEntropyVar",
+                self.handler.avg_client_entropy_var,
+                round,
+            )
+
 
 @dataclass
 class COMETPipeline(DSFLPipeline):
