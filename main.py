@@ -6,9 +6,9 @@ from typing import Annotated
 
 import torch
 import typer
+import wandb
 from blazefl.reproducibility import setup_reproducibility
 
-import wandb
 from algorithm import (
     AlgorithmName,
     DSFLClientTrainer,

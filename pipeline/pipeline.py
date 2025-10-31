@@ -1,9 +1,8 @@
 import logging
 from typing import Protocol
 
-from blazefl.core import BaseServerHandler, ThreadPoolClientTrainer
-
 import wandb
+from blazefl.core import BaseServerHandler, ThreadPoolClientTrainer
 
 
 class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
