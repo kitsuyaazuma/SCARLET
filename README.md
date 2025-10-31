@@ -4,10 +4,10 @@
 ![GitHub License](https://img.shields.io/github/license/kitsuyaazuma/SCARLET)
 
 
-Official implementation of SCARLET (Semi-supervised federated distillation with global CAching and Reduced soft-Label EnTropy)
+Official implementation of **SCARLET** from the paper "[Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation](https://arxiv.org/abs/2504.19602)".
 
 > [!IMPORTANT]
-> The `main` branch contains a simplified implementation for better understanding of SCARLET’s core algorithms.
+> The `main` branch contains a simplified implementation for better understanding of SCARLET’s core algorithms, using [BlazeFL](https://github.com/blazefl/blazefl).
 > For the exact experiment code and hyperparameter settings used in our paper, switch to the [`reproducibility`](https://github.com/kitsuyaazuma/SCARLET/tree/reproducibility) branch.
 
 # Getting Started
@@ -19,33 +19,29 @@ git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 uv sync
 
-uv run python main.py +algorithm=scarlet
+# NOTE: PYTHON_GIL=0 is required due to a triton issue (https://github.com/triton-lang/triton/issues/8491)
+PYTHON_GIL=0 uv run python main.py
 ```
 
 ## Docker
 
 ```bash
-docker run -it --rm --gpus=all --name scarlet ghcr.io/kitsuyaazuma/scarlet:main +algorithm=scarlet
+docker run -it --rm --gpus=all --name scarlet ghcr.io/kitsuyaazuma/scarlet:main --algorithm-name SCARLET
 
 # or
 
 git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 docker build -t scarlet .
-docker run -it --rm --gpus=all --name scarlet scarlet:latest +algorithm=scarlet
+docker run -it --rm --gpus=all --name scarlet scarlet:latest --algorithm-name SCARLET
 ```
 
 # Configuration
 
-All hyperparameters live under `config/` and are managed with [Hydra](https://github.com/facebookresearch/hydra). You can override any setting on the command line:
+All hyperparameters are managed with [Typer](https://github.com/fastapi/typer). You can see all available options by running:
 
 ```bash
-uv run python main.py \
-    dir_alpha=0.05 \
-    num_parallels=10 \
-    +algorithm=scarlet \
-    algorithm.enhanced_era_exponent=2.0 \
-    algorithm.cache_duration=50
+uv run python main.py --help
 ```
 
 # Citation

@@ -3,19 +3,21 @@ name = "scarlet"
 version = "0.1.0"
 description = "Official implementation of SCARLET (Semi-supervised federated distillation with global CAching and Reduced soft-Label EnTropy)"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
-    "blazefl[reproducibility]>=2.0.0",
-    "hydra-core>=1.3.2",
-    "tensorboard>=2.19.0",
-    "torchvision>=0.22.1",
+    "blazefl[reproducibility]>=2.0.2",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
     "tqdm>=4.67.1",
+    "typer>=0.20.0",
+    "wandb>=0.22.3",
 ]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.17.0",
-    "ruff>=0.12.3",
+    "mypy>=1.18.2",
+    "ruff>=0.14.2",
+    "types-tqdm>=4.67.0.20250809",
 ]
 
 [tool.basedpyright]

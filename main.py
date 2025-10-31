@@ -1,122 +1,221 @@
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
-import hydra
 import torch
-import torch.multiprocessing as mp
+import typer
 from blazefl.reproducibility import setup_reproducibility
-from hydra.core import hydra_config
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.tensorboard.writer import SummaryWriter
 
+import wandb
 from algorithm import (
+    AlgorithmName,
     DSFLClientTrainer,
     DSFLServerHandler,
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
-from dataset import CommonPartitionedDataset
-from models.selector import CommonModelSelector
+from dataset import (
+    CommonPartitionedDataset,
+    CommonPartitionStrategy,
+    CommonPrivateTask,
+    CommonPublicTask,
+)
+from models import CommonModelName, CommonModelSelector
 from pipeline import CommonPipeline
 
 
-@hydra.main(version_base=None, config_path="config", config_name="config")
-def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
+def setup_logging() -> None:
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
-    log_dir = hydra_config.HydraConfig.get().runtime.output_dir
-    writer = SummaryWriter(log_dir=log_dir)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_root_dir = Path(cfg.dataset_root_dir)
-    dataset_split_dir = dataset_root_dir.joinpath(timestamp)
-    share_dir = Path(cfg.share_dir).joinpath(timestamp)
-    state_dir = Path(cfg.state_dir).joinpath(timestamp)
-
+def main(
+    dataset_root_dir: Annotated[
+        Path, typer.Option(help="Root directory for the dataset.")
+    ] = Path("/tmp/scarlet/dataset"),
+    seed: Annotated[int, typer.Option(help="Seed for reproducibility.")] = 42,
+    num_clients: Annotated[
+        int, typer.Option(help="Total number of clients in the federation.")
+    ] = 100,
+    private_task: Annotated[
+        CommonPrivateTask, typer.Option(help="Task name for private dataset.")
+    ] = CommonPrivateTask.CIFAR10,
+    public_task: Annotated[
+        CommonPublicTask, typer.Option(help="Task name for public dataset.")
+    ] = CommonPublicTask.CIFAR100,
+    partition: Annotated[
+        CommonPartitionStrategy,
+        typer.Option(help="Dataset partition strategy."),
+    ] = CommonPartitionStrategy.DIRICHLET,
+    dir_alpha: Annotated[
+        float,
+        typer.Option(help="Alpha for Dirichlet distribution based partitioning."),
+    ] = 0.05,
+    public_size: Annotated[
+        int, typer.Option(help="Total size of the public dataset.")
+    ] = 10000,
+    model_name: Annotated[
+        CommonModelName, typer.Option(help="Name of the model to be used.")
+    ] = CommonModelName.RESNET20,
+    global_round: Annotated[
+        int, typer.Option(help="Total number of federated learning rounds.")
+    ] = 5,
+    kd_epochs: Annotated[
+        int, typer.Option(help="Number of epochs for knowledge distillation.")
+    ] = 1,
+    kd_batch_size: Annotated[
+        int, typer.Option(help="Batch size for knowledge distillation.")
+    ] = 50,
+    kd_lr: Annotated[
+        float, typer.Option(help="Learning rate for knowledge distillation.")
+    ] = 0.1,
+    public_size_per_round: Annotated[
+        int, typer.Option(help="Number of public samples used per round.")
+    ] = 1000,
+    sample_ratio: Annotated[
+        float, typer.Option(help="Fraction of clients to sample in each round.")
+    ] = 1.0,
+    epochs: Annotated[
+        int, typer.Option(help="Number of local training epochs per client.")
+    ] = 5,
+    batch_size: Annotated[
+        int, typer.Option(help="Batch size for local training.")
+    ] = 50,
+    lr: Annotated[
+        float, typer.Option(help="Learning rate for the client optimizer.")
+    ] = 0.1,
+    num_parallels: Annotated[
+        int,
+        typer.Option(help="Number of parallel threads for training."),
+    ] = 10,
+    algorithm_name: Annotated[
+        AlgorithmName, typer.Option(help="Algorithm to use.")
+    ] = AlgorithmName.SCARLET,
+    # Algorithm-specific args
+    era_temperature: Annotated[
+        float, typer.Option(help="Temperature for ERA (DSFL).")
+    ] = 0.1,
+    enhanced_era_exponent: Annotated[
+        float, typer.Option(help="Exponent for Enhanced ERA (SCARLET).")
+    ] = 2.0,
+    cache_duration: Annotated[
+        int, typer.Option(help="Cache duration for soft-labels (SCARLET).")
+    ] = 50,
+) -> None:
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
         device = "mps"
-    logging.info(f"device: {device}")
 
-    setup_reproducibility(cfg.seed)
+    config = locals()
+    run = wandb.init(mode="offline", config=config)
+
+    setup_logging()
+    logging.info("\n" + "\n".join([f"  {k}: {v}" for k, v in config.items()]))
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dataset_split_dir = dataset_root_dir / timestamp
+
+    setup_reproducibility(seed)
 
     dataset = CommonPartitionedDataset(
         root=dataset_root_dir,
         path=dataset_split_dir,
-        num_clients=cfg.num_clients,
-        seed=cfg.seed,
-        private_task=cfg.private_task,
-        public_task=cfg.public_task,
-        partition=cfg.partition,
-        dir_alpha=cfg.dir_alpha,
-        public_size=cfg.public_size,
+        num_clients=num_clients,
+        seed=seed,
+        private_task=private_task,
+        public_task=public_task,
+        partition=partition,
+        dir_alpha=dir_alpha,
+        public_size=public_size,
     )
-    model_selector = CommonModelSelector(num_classes=dataset.num_classes, seed=cfg.seed)
-
-    handler_args = {
-        "model_selector": model_selector,
-        "model_name": cfg.model_name,
-        "dataset": dataset,
-        "global_round": cfg.global_round,
-        "num_clients": cfg.num_clients,
-        "kd_epochs": cfg.kd_epochs,
-        "kd_batch_size": cfg.kd_batch_size,
-        "kd_lr": cfg.kd_lr,
-        "public_size_per_round": cfg.public_size_per_round,
-        "device": device,
-        "sample_ratio": cfg.sample_ratio,
-        "seed": cfg.seed,
-    }
-    trainer_args = {
-        "model_selector": model_selector,
-        "model_name": cfg.model_name,
-        "share_dir": share_dir,
-        "state_dir": state_dir,
-        "seed": cfg.seed,
-        "dataset": dataset,
-        "device": device,
-        "num_clients": cfg.num_clients,
-        "epochs": cfg.epochs,
-        "batch_size": cfg.batch_size,
-        "lr": cfg.lr,
-        "kd_epochs": cfg.kd_epochs,
-        "kd_batch_size": cfg.kd_batch_size,
-        "kd_lr": cfg.kd_lr,
-        "num_parallels": cfg.num_parallels,
-        "public_size_per_round": cfg.public_size_per_round,
-    }
+    model_selector = CommonModelSelector(num_classes=dataset.num_classes, seed=seed)
 
     handler: DSFLServerHandler | SCARLETServerHandler | None = None
     trainer: DSFLClientTrainer | SCARLETClientTrainer | None = None
-    match cfg.algorithm.name:
-        case "dsfl":
+
+    match algorithm_name:
+        case AlgorithmName.DSFL:
             handler = DSFLServerHandler(
-                **handler_args,
-                era_temperature=cfg.algorithm.era_temperature,
+                model_selector=model_selector,
+                model_name=model_name,
+                dataset=dataset,
+                global_round=global_round,
+                num_clients=num_clients,
+                device=device,
+                sample_ratio=sample_ratio,
+                kd_epochs=kd_epochs,
+                kd_lr=kd_lr,
+                kd_batch_size=kd_batch_size,
+                seed=seed,
+                public_size_per_round=public_size_per_round,
+                era_temperature=era_temperature,
             )
             trainer = DSFLClientTrainer(
-                **trainer_args,
+                model_selector=model_selector,
+                model_name=model_name,
+                dataset=dataset,
+                seed=seed,
+                device=device,
+                num_clients=num_clients,
+                epochs=epochs,
+                lr=lr,
+                batch_size=batch_size,
+                num_parallels=num_parallels,
+                kd_epochs=kd_epochs,
+                kd_lr=kd_lr,
+                kd_batch_size=kd_batch_size,
+                public_size_per_round=public_size_per_round,
             )
-        case "scarlet":
+        case AlgorithmName.SCARLET:
             handler = SCARLETServerHandler(
-                **handler_args,
-                enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
-                cache_duration=cfg.algorithm.cache_duration,
+                model_selector=model_selector,
+                model_name=model_name,
+                dataset=dataset,
+                global_round=global_round,
+                num_clients=num_clients,
+                device=device,
+                sample_ratio=sample_ratio,
+                kd_epochs=kd_epochs,
+                kd_lr=kd_lr,
+                kd_batch_size=kd_batch_size,
+                seed=seed,
+                public_size_per_round=public_size_per_round,
+                enhanced_era_exponent=enhanced_era_exponent,
+                cache_duration=cache_duration,
             )
             trainer = SCARLETClientTrainer(
-                **trainer_args,
+                model_selector=model_selector,
+                model_name=model_name,
+                dataset=dataset,
+                seed=seed,
+                device=device,
+                num_clients=num_clients,
+                epochs=epochs,
+                lr=lr,
+                batch_size=batch_size,
+                num_parallels=num_parallels,
+                kd_epochs=kd_epochs,
+                kd_lr=kd_lr,
+                kd_batch_size=kd_batch_size,
+                public_size_per_round=public_size_per_round,
             )
-        case _:
-            raise ValueError(f"Invalid algorithm: {cfg.algorithm.name}")
 
     try:
         pipeline = CommonPipeline(
             handler=handler,
             trainer=trainer,
-            writer=writer,
+            run=run,
         )
         pipeline.main()
     except KeyboardInterrupt:
@@ -124,7 +223,6 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    # NOTE: To use CUDA with multiprocessing, you must use the 'spawn' start method
-    mp.set_start_method("spawn")
+    # mp.set_start_method("spawn")
 
-    main()
+    typer.run(main)

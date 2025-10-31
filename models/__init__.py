@@ -1,3 +1,3 @@
-from models.selector import CommonModelSelector
+from models.selector import CommonModelName, CommonModelSelector
 
-__all__ = ["CommonModelSelector"]
+__all__ = ["CommonModelName", "CommonModelSelector"]

@@ -1,8 +1,8 @@
 import logging
-from typing import Protocol, TypeVar
+from typing import Protocol
 
-from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer
-from torch.utils.tensorboard.writer import SummaryWriter
+import wandb
+from blazefl.core import BaseServerHandler, ThreadPoolClientTrainer
 
 
 class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
@@ -11,26 +11,20 @@ class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
     def get_summary(self) -> dict[str, float]: ...
 
 
-CommonServerHandler = TypeVar(
-    "CommonServerHandler", bound=SummarizableBaseServerHandler
-)
-CommonClientTrainer = TypeVar("CommonClientTrainer", bound=ProcessPoolClientTrainer)
-
-
 class CommonPipeline:
     def __init__(
         self,
-        handler: CommonServerHandler,
-        trainer: CommonClientTrainer,
-        writer: SummaryWriter,
+        handler: SummarizableBaseServerHandler,
+        # trainer: CommonClientTrainer,
+        trainer: ThreadPoolClientTrainer,
+        run: wandb.Run,
     ) -> None:
         self.handler = handler
         self.trainer = trainer
-        self.writer = writer
+        self.run = run
 
     def main(self) -> None:
         while not self.handler.if_stop():
-            assert hasattr(self.handler, "round")
             round_ = self.handler.round
             # server side
             sampled_clients = self.handler.sample_clients()
@@ -45,8 +39,7 @@ class CommonPipeline:
                 self.handler.load(pack)
 
             summary = self.handler.get_summary()
-            for key, value in summary.items():
-                self.writer.add_scalar(key, value, round_)
+            self.run.log(summary, step=round_)
             formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
             logging.info(f"round: {round_}, {formatted_summary}")
 

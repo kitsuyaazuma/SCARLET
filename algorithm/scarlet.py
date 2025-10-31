@@ -1,33 +1,25 @@
 import threading
 from collections import defaultdict, deque
 from collections.abc import Iterable
+from concurrent.futures import Future, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import IntEnum
-from multiprocessing.pool import ApplyResult
-from pathlib import Path
 from typing import NamedTuple
 
 import torch
 from blazefl.core import (
     BaseServerHandler,
-    ProcessPoolClientTrainer,
-    SHMHandle,
+    ThreadPoolClientTrainer,
 )
-from blazefl.reproducibility import (
-    RNGSuite,
-    create_rng_suite,
-    setup_reproducibility,
-)
-from torch import multiprocessing as mp
+from blazefl.reproducibility import create_rng_suite
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
-from models import CommonModelSelector
-from models.selector import CommonModelName
+from models import CommonModelName, CommonModelSelector
 
 
 @dataclass
@@ -36,11 +28,6 @@ class SCARLETUplinkPackage:
     soft_labels: torch.Tensor
     indices: torch.Tensor
     metadata: dict
-
-
-class SCARLETProcessPoolUplinkPackage(SCARLETUplinkPackage):
-    soft_labels: torch.Tensor | SHMHandle  # type: ignore
-    indices: torch.Tensor | SHMHandle  # type: ignore
 
 
 @dataclass
@@ -159,13 +146,8 @@ class SCARLETServerHandler(
         soft_labels_stack: defaultdict[int, list[torch.Tensor]] = defaultdict(
             list[torch.Tensor]
         )
-        for i, (soft_labels, indices) in enumerate(
-            zip(soft_labels_list, indices_list, strict=True)
-        ):
-            num_samples = self.metadata_list[i]["num_samples"]
-            for soft_label, index in zip(
-                soft_labels[:num_samples], indices[:num_samples], strict=True
-            ):
+        for soft_labels, indices in zip(soft_labels_list, indices_list, strict=True):
+            for soft_label, index in zip(soft_labels, indices, strict=True):
                 soft_labels_stack[int(index.item())].append(soft_label)
 
         global_soft_labels: list[torch.Tensor] = []
@@ -276,42 +258,13 @@ class LocalCacheEntry(NamedTuple):
     soft_label: torch.Tensor | None
 
 
-@dataclass
-class SCARLETClientConfig:
-    model_selector: CommonModelSelector
-    model_name: CommonModelName
-    dataset: CommonPartitionedDataset
-    epochs: int
-    batch_size: int
-    lr: float
-    kd_epochs: int
-    kd_batch_size: int
-    kd_lr: float
-    cid: int
-    seed: int
-    state_path: Path
-
-
-@dataclass
-class SCARLETClientState:
-    random: RNGSuite
-    model: dict[str, torch.Tensor]
-    optimizer: dict[str, torch.Tensor]
-    kd_optimizer: dict[str, torch.Tensor] | None
-    local_cache: list[LocalCacheEntry]
-
-
 class SCARLETClientTrainer(
-    ProcessPoolClientTrainer[
-        SCARLETProcessPoolUplinkPackage, SCARLETDownlinkPackage, SCARLETClientConfig
-    ]
+    ThreadPoolClientTrainer[SCARLETUplinkPackage, SCARLETDownlinkPackage]
 ):
     def __init__(
         self,
         model_selector: CommonModelSelector,
-        model_name: str,
-        share_dir: Path,
-        state_dir: Path,
+        model_name: CommonModelName,
         dataset: CommonPartitionedDataset,
         device: str,
         num_clients: int,
@@ -325,12 +278,20 @@ class SCARLETClientTrainer(
         num_parallels: int,
         public_size_per_round: int,
     ) -> None:
-        self.model_selector = model_selector
-        self.model_name = CommonModelName(model_name)
-        self.share_dir = share_dir
-        self.share_dir.mkdir(parents=True, exist_ok=True)
-        self.state_dir = state_dir
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.models = [
+            model_selector.select_model(model_name) for _ in range(num_clients)
+        ]
+        self.optimizers = [
+            torch.optim.SGD(model.parameters(), lr=lr) for model in self.models
+        ]
+        self.kd_optimizers = [
+            torch.optim.SGD(model.parameters(), lr=kd_lr) for model in self.models
+        ]
+        self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
+        self.local_caches = [
+            [LocalCacheEntry(soft_label=None) for _ in range(dataset.public_size)]
+            for _ in range(num_clients)
+        ]
         self.dataset = dataset
         self.device = device
         if self.device == "cuda":
@@ -338,17 +299,13 @@ class SCARLETClientTrainer(
         self.num_clients = num_clients
         self.epochs = epochs
         self.batch_size = batch_size
-        self.lr = lr
         self.kd_epochs = kd_epochs
         self.kd_batch_size = kd_batch_size
-        self.kd_lr = kd_lr
         self.seed = seed
         self.num_parallels = num_parallels
 
-        self.ipc_mode = "shared_memory"
-        self.manager = mp.Manager()
-        self.stop_event = self.manager.Event()
-        self.cache: list[SCARLETProcessPoolUplinkPackage] = []
+        self.stop_event = threading.Event()
+        self.cache: list[SCARLETUplinkPackage] = []
 
         self.soft_labels_buffer = torch.zeros(
             (public_size_per_round, self.dataset.num_classes),
@@ -358,55 +315,25 @@ class SCARLETClientTrainer(
 
     def progress_fn(
         self,
-        it: list[ApplyResult],
-    ) -> Iterable[ApplyResult]:
-        return tqdm(it, desc="Client", leave=False)
+        it: list[Future],
+    ) -> Iterable[Future]:
+        return tqdm(as_completed(it), total=len(it), desc="Client", leave=False)
 
-    def prepare_uplink_package_buffer(self) -> SCARLETProcessPoolUplinkPackage:
-        return SCARLETProcessPoolUplinkPackage(
-            cid=-1,
-            soft_labels=self.soft_labels_buffer.clone(),
-            indices=self.indices_buffer.clone(),
-            metadata={"acc": 0.0, "loss": 0.0, "num_samples": 0},
-        )
-
-    @staticmethod
     def worker(
-        config: SCARLETClientConfig | Path,
-        payload: SCARLETDownlinkPackage | Path,
+        self,
+        cid: int,
         device: str,
+        payload: SCARLETDownlinkPackage,
         stop_event: threading.Event,
-        *,
-        shm_buffer: SCARLETProcessPoolUplinkPackage | None = None,
-    ) -> SCARLETProcessPoolUplinkPackage:
-        assert isinstance(config, SCARLETClientConfig) and isinstance(
-            payload, SCARLETDownlinkPackage
-        )
-        setup_reproducibility(config.seed)
-
-        model = config.model_selector.select_model(config.model_name)
-        optimizer = torch.optim.SGD(model.parameters(), lr=config.lr)
-        kd_optimizer: torch.optim.SGD | None = None
-
-        if config.state_path.exists():
-            state = torch.load(config.state_path, weights_only=False)
-            assert isinstance(state, SCARLETClientState)
-            rng_suite = state.random
-            local_cache = state.local_cache
-            model.load_state_dict(state.model)
-            optimizer.load_state_dict(state.optimizer)
-            if state.kd_optimizer is not None:
-                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
-                kd_optimizer.load_state_dict(state.kd_optimizer)
-        else:
-            rng_suite = create_rng_suite(config.seed)
-            local_cache = [
-                LocalCacheEntry(soft_label=None)
-                for _ in range(config.dataset.public_size)
-            ]
+    ) -> SCARLETUplinkPackage:
+        model = self.models[cid]
+        optimizer = self.optimizers[cid]
+        kd_optimizer = self.kd_optimizers[cid]
+        rng_suite = self.rng_suites[cid]
+        local_cache = self.local_caches[cid]
 
         # Distill
-        public_dataset = config.dataset.get_dataset(
+        public_dataset = self.dataset.get_dataset(
             type_=CommonPartitionType.PUBLIC, cid=None
         )
         if (
@@ -421,29 +348,26 @@ class SCARLETClientTrainer(
                 cache_signals=payload.cache_signals,
             )
             global_indices = payload.indices.tolist()
-            if kd_optimizer is None:
-                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
-
             open_loader = DataLoader(
                 Subset(public_dataset, global_indices),
-                batch_size=config.kd_batch_size,
+                batch_size=self.kd_batch_size,
             )
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
                 open_loader=open_loader,
                 global_soft_labels=global_soft_labels,
-                kd_epochs=config.kd_epochs,
-                kd_batch_size=config.kd_batch_size,
+                kd_epochs=self.kd_epochs,
+                kd_batch_size=self.kd_batch_size,
                 device=device,
                 stop_event=stop_event,
             )
 
         # Train
-        private_loader = config.dataset.get_dataloader(
+        private_loader = self.dataset.get_dataloader(
             type_=CommonPartitionType.PRIVATE,
-            cid=config.cid,
-            batch_size=config.batch_size,
+            cid=cid,
+            batch_size=self.batch_size,
             generator=rng_suite.torch_cpu,
         )
         DSFLClientTrainer.train(
@@ -451,14 +375,14 @@ class SCARLETClientTrainer(
             optimizer=optimizer,
             data_loader=private_loader,
             device=device,
-            epochs=config.epochs,
+            epochs=self.epochs,
             stop_event=stop_event,
         )
 
         # Predict
         public_loader = DataLoader(
             Subset(public_dataset, payload.next_indices.tolist()),
-            batch_size=config.batch_size,
+            batch_size=self.batch_size,
         )
         soft_labels = DSFLClientTrainer.predict(
             model=model,
@@ -467,10 +391,10 @@ class SCARLETClientTrainer(
         )
 
         # Evaluate
-        test_loader = config.dataset.get_dataloader(
+        test_loader = self.dataset.get_dataloader(
             type_=CommonPartitionType.TEST,
-            cid=config.cid,
-            batch_size=config.batch_size,
+            cid=cid,
+            batch_size=self.batch_size,
         )
         loss, acc = DSFLServerHandler.evaulate(
             model=model,
@@ -478,33 +402,18 @@ class SCARLETClientTrainer(
             device=device,
         )
 
-        num_samples = soft_labels.shape[0]
-        package = SCARLETProcessPoolUplinkPackage(
-            cid=config.cid,
+        package = SCARLETUplinkPackage(
+            cid=cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
-            metadata={"loss": loss, "acc": acc, "num_samples": num_samples},
+            metadata={"loss": loss, "acc": acc},
         )
-        assert (
-            shm_buffer is not None
-            and isinstance(shm_buffer.soft_labels, torch.Tensor)
-            and isinstance(shm_buffer.indices, torch.Tensor)
-            and isinstance(package.soft_labels, torch.Tensor)
-            and isinstance(package.indices, torch.Tensor)
-        )
-        shm_buffer.soft_labels[:num_samples].copy_(package.soft_labels)
-        shm_buffer.indices[:num_samples].copy_(package.indices)
-        package.soft_labels = SHMHandle()
-        package.indices = SHMHandle()
 
-        state = SCARLETClientState(
-            random=rng_suite,
-            model=model.state_dict(),
-            optimizer=optimizer.state_dict(),
-            kd_optimizer=kd_optimizer.state_dict() if kd_optimizer else None,
-            local_cache=local_cache,
-        )
-        torch.save(state, config.state_path)
+        self.models[cid] = model
+        self.optimizers[cid] = optimizer
+        self.kd_optimizers[cid] = kd_optimizer
+        self.rng_suites[cid] = rng_suite
+        self.local_caches[cid] = local_cache
         return package
 
     @staticmethod
@@ -534,24 +443,7 @@ class SCARLETClientTrainer(
                     )
         return local_cache, restored_global_soft_labels
 
-    def get_client_config(self, cid: int) -> SCARLETClientConfig:
-        config = SCARLETClientConfig(
-            model_selector=self.model_selector,
-            model_name=self.model_name,
-            dataset=self.dataset,
-            epochs=self.epochs,
-            batch_size=self.batch_size,
-            lr=self.lr,
-            kd_epochs=self.kd_epochs,
-            kd_batch_size=self.kd_batch_size,
-            kd_lr=self.kd_lr,
-            cid=cid,
-            seed=self.seed,
-            state_path=self.state_dir.joinpath(f"{cid}.pt"),
-        )
-        return config
-
-    def uplink_package(self) -> list[SCARLETProcessPoolUplinkPackage]:
+    def uplink_package(self) -> list[SCARLETUplinkPackage]:
         package = deepcopy(self.cache)
         self.cache = []
         return package

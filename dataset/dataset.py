@@ -13,18 +13,22 @@ from dataset.functional import balance_split, client_inner_dirichlet_partition_f
 from dataset.transforms import GeneratorRandomCrop, GeneratorRandomHorizontalFlip
 
 
-class PrivateTask(StrEnum):
-    CIFAR10 = "cifar10"
+class CommonPrivateTask(StrEnum):
+    CIFAR10 = "CIFAR10"
 
 
-class PublicTask(StrEnum):
-    CIFAR100 = "cifar100"
+class CommonPublicTask(StrEnum):
+    CIFAR100 = "CIFAR100"
+
+
+class CommonPartitionStrategy(StrEnum):
+    DIRICHLET = "DIRICHLET"
 
 
 class CommonPartitionType(StrEnum):
-    PRIVATE = "private"
-    PUBLIC = "public"
-    TEST = "test"
+    PRIVATE = "PRIVATE"
+    PUBLIC = "PUBLIC"
+    TEST = "TEST"
 
 
 class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
@@ -34,9 +38,9 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         path: Path,
         num_clients: int,
         seed: int,
-        private_task: str,
-        public_task: str,
-        partition: str,
+        private_task: CommonPrivateTask,
+        public_task: CommonPublicTask,
+        partition: CommonPartitionStrategy,
         dir_alpha: float,
         public_size: int,
     ) -> None:
@@ -75,7 +79,7 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         self.root.mkdir(parents=True, exist_ok=True)
         assert self.private_task != self.public_task
         match self.private_task:
-            case PrivateTask.CIFAR10:
+            case CommonPrivateTask.CIFAR10:
                 private_dataset = torchvision.datasets.CIFAR10(
                     root=self.root,
                     train=True,
@@ -86,23 +90,19 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
                     train=False,
                     download=True,
                 )
-            case _:
-                raise ValueError(f"Invalid private task: {self.private_task}")
         match self.public_task:
-            case PublicTask.CIFAR100:
+            case CommonPublicTask.CIFAR100:
                 public_dataset = torchvision.datasets.CIFAR100(
                     root=self.root,
                     train=True,
                     download=True,
                 )
-            case _:
-                raise ValueError(f"Invalid public task: {self.public_task}")
 
         for type_ in CommonPartitionType:
             self.path.joinpath(type_.value).mkdir(parents=True)
 
         match self.partition:
-            case "dirichlet":
+            case CommonPartitionStrategy.DIRICHLET:
                 assert self.dir_alpha is not None
                 self.num_classes = len(private_dataset.classes)
                 private_client_dict, class_priors = (
@@ -132,8 +132,6 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
                     verbose=False,
                     numpy_rng=self.rng_suite.numpy,
                 )
-            case _:
-                raise ValueError(f"Invalid partition: {self.partition}")
 
         for cid, indices in private_client_dict.items():
             client_private_dataset = FilteredDataset(
@@ -236,5 +234,6 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
             batch_size=batch_size,
             shuffle=type_ == CommonPartitionType.PRIVATE,
             generator=generator,
+            num_workers=0,
         )
         return data_loader
