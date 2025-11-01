@@ -131,7 +131,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             global_soft_labels.append(era_soft_labels)
 
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         public_loader = DataLoader(
             Subset(public_dataset, global_indices),
@@ -155,15 +155,16 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
     def distill(
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
-        open_loader: DataLoader,
+        public_loader: DataLoader,
         global_soft_labels: list[torch.Tensor],
         kd_epochs: int,
         kd_batch_size: int,
         device: str,
         stop_event: threading.Event | None,
-    ) -> None:
+        update_weights: bool = True,
+    ) -> float:
         model.to(device)
-        model.train()
+        model.train(update_weights)
         global_soft_label_loader = DataLoader(
             FilteredDataset(
                 indices=list(range(len(global_soft_labels))),
@@ -171,24 +172,34 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             ),
             batch_size=kd_batch_size,
         )
+
+        epoch_loss, epoch_samples = 0.0, 0
         for _ in range(kd_epochs):
+            epoch_loss = 0.0
+            epoch_samples = 0
             if stop_event is not None and stop_event.is_set():
                 break
             for data, soft_label in zip(
-                open_loader, global_soft_label_loader, strict=True
+                public_loader, global_soft_label_loader, strict=True
             ):
                 data = data.to(device)
                 soft_label = soft_label.to(device).squeeze(1)
 
-                output = model(data)
-                loss = F.kl_div(
-                    F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
-                )
+                with torch.set_grad_enabled(update_weights):
+                    output = model(data)
+                    loss = F.kl_div(
+                        F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
+                    )
+                epoch_loss += loss.item()
+                epoch_samples += data.size(0)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-        return
+                if update_weights:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+        avg_epoch_loss = epoch_loss / epoch_samples
+        return avg_epoch_loss
 
     @staticmethod
     def evaulate(
@@ -196,7 +207,6 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
     ) -> tuple[float, float]:
         model.to(device)
         model.eval()
-        criterion = torch.nn.CrossEntropyLoss()
 
         total_loss = 0.0
         total_correct = 0
@@ -207,15 +217,12 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
                 labels = labels.to(device)
 
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                loss = F.cross_entropy(outputs, labels, reduction="mean")
+                total_loss += loss.item() * labels.size(0)
 
-                _, predicted = torch.max(outputs, 1)
-                correct = torch.sum(predicted.eq(labels)).item()
-
-                batch_size = labels.size(0)
-                total_loss += loss.item() * batch_size
-                total_correct += int(correct)
-                total_samples += batch_size
+                predicted = outputs.argmax(dim=1)
+                total_correct += (predicted == labels).sum().item()
+                total_samples += labels.size(0)
 
         avg_loss = total_loss / total_samples
         avg_acc = total_correct / total_samples
@@ -330,19 +337,19 @@ class DSFLClientTrainer(
 
         # Distill
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         if payload.indices is not None and payload.soft_labels is not None:
             global_soft_labels = list(torch.unbind(payload.soft_labels, dim=0))
             global_indices = payload.indices.tolist()
-            open_loader = DataLoader(
+            public_loader = DataLoader(
                 Subset(public_dataset, global_indices),
                 batch_size=self.kd_batch_size,
             )
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                open_loader=open_loader,
+                public_loader=public_loader,
                 global_soft_labels=global_soft_labels,
                 kd_epochs=self.kd_epochs,
                 kd_batch_size=self.kd_batch_size,
@@ -352,7 +359,7 @@ class DSFLClientTrainer(
 
         # Train
         private_loader = self.dataset.get_dataloader(
-            type_=CommonPartitionType.PRIVATE,
+            type_=CommonPartitionType.TRAIN_PRIVATE,
             cid=cid,
             batch_size=self.batch_size,
             generator=rng_suite.torch_cpu,
@@ -410,12 +417,15 @@ class DSFLClientTrainer(
         device: str,
         epochs: int,
         stop_event: threading.Event,
-    ) -> None:
+    ) -> tuple[float, float]:
         model.to(device)
         model.train()
-        criterion = torch.nn.CrossEntropyLoss()
 
+        epoch_loss, epoch_correct, epoch_samples = 0.0, 0, 0
         for _ in range(epochs):
+            epoch_loss = 0.0
+            epoch_correct = 0
+            epoch_samples = 0
             if stop_event.is_set():
                 break
             for data, target in data_loader:
@@ -423,12 +433,21 @@ class DSFLClientTrainer(
                 target = target.to(device)
 
                 output = model(data)
-                loss = criterion(output, target)
+                loss = F.cross_entropy(output, target, reduction="mean")
+                epoch_loss += loss.item() * target.size(0)
+
+                precited = output.argmax(dim=1)
+                epoch_correct += (precited == target).sum().item()
+                epoch_samples += data.size(0)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-        return
+
+        avg_epoch_loss = epoch_loss / epoch_samples
+        avg_epoch_acc = epoch_correct / epoch_samples
+
+        return avg_epoch_loss, avg_epoch_acc
 
     @staticmethod
     def predict(
