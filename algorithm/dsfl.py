@@ -161,7 +161,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
         kd_batch_size: int,
         device: str,
         stop_event: threading.Event | None,
-    ) -> None:
+    ) -> float:
         model.to(device)
         model.train()
         global_soft_label_loader = DataLoader(
@@ -171,7 +171,8 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             ),
             batch_size=kd_batch_size,
         )
-        for _ in range(kd_epochs):
+        epoch_loss, epoch_samples = 0.0, 0
+        for kd_epoch in range(kd_epochs):
             if stop_event is not None and stop_event.is_set():
                 break
             for data, soft_label in zip(
@@ -184,11 +185,16 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
                 loss = F.kl_div(
                     F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
                 )
+                if kd_epoch == kd_epochs - 1:
+                    epoch_loss += loss.item() * soft_label.size(0)
+                    epoch_samples += soft_label.size(0)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-        return
+
+        avg_loss = epoch_loss / epoch_samples
+        return avg_loss
 
     @staticmethod
     def evaulate(
@@ -406,12 +412,12 @@ class DSFLClientTrainer(
         device: str,
         epochs: int,
         stop_event: threading.Event,
-    ) -> None:
+    ) -> tuple[float, float]:
         model.to(device)
         model.train()
-        criterion = torch.nn.CrossEntropyLoss()
 
-        for _ in range(epochs):
+        epoch_loss, epoch_correct, epoch_samples = 0.0, 0, 0
+        for epoch in range(epochs):
             if stop_event.is_set():
                 break
             for data, target in data_loader:
@@ -419,12 +425,20 @@ class DSFLClientTrainer(
                 target = target.to(device)
 
                 output = model(data)
-                loss = criterion(output, target)
+                loss = F.cross_entropy(output, target, reduction="mean")
+                if epoch == epochs - 1:
+                    epoch_loss += loss.item() * target.size(0)
+                    predicted = output.argmax(dim=1)
+                    epoch_correct += (predicted == target).sum().item()
+                    epoch_samples += target.size(0)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-        return
+
+        avg_loss = epoch_loss / epoch_samples
+        avg_acc = epoch_correct / epoch_samples
+        return avg_loss, avg_acc
 
     @staticmethod
     def predict(
