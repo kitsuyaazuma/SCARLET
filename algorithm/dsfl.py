@@ -16,6 +16,7 @@ from blazefl.reproducibility import (
     RNGSuite,
     create_rng_suite,
 )
+from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
@@ -57,7 +58,8 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
         era_temperature: float,
         seed: int,
     ) -> None:
-        self.model = model_selector.select_model(CommonModelName(model_name))
+        self.model_selector = model_selector
+        self.model_name = model_name
         self.dataset = dataset
         self.global_round = global_round
         self.num_clients = num_clients
@@ -70,6 +72,8 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
         self.era_temperature = era_temperature
         self.seed = seed
 
+        self.model = model_selector.select_model(CommonModelName(model_name))
+        self.model.to(self.device)
         self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
         self.client_buffer_cache: list[DSFLUplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
@@ -283,17 +287,20 @@ class DSFLClientTrainer(
         num_parallels: int,
         public_size_per_round: int,
     ) -> None:
-        self.models = [
-            model_selector.select_model(model_name) for _ in range(num_clients)
+        self.model_states = [
+            model_selector.select_model(model_name).state_dict()
+            for _ in range(num_clients)
         ]
-        self.optimizers = [
-            torch.optim.SGD(model.parameters(), lr=lr) for model in self.models
+        self.optimizer_states: list[None | StateDict] = [
+            None for _ in range(num_clients)
         ]
-        self.kd_optimizers = [
-            torch.optim.SGD(model.parameters(), lr=kd_lr) for model in self.models
+        self.kd_optimizer_states: list[None | StateDict] = [
+            None for _ in range(num_clients)
         ]
         self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
 
+        self.model_selector = model_selector
+        self.model_name = model_name
         self.dataset = dataset
         self.device = device
         if self.device == "cuda":
@@ -301,8 +308,10 @@ class DSFLClientTrainer(
         self.num_clients = num_clients
         self.epochs = epochs
         self.batch_size = batch_size
+        self.lr = lr
         self.kd_epochs = kd_epochs
         self.kd_batch_size = kd_batch_size
+        self.kd_lr = kd_lr
         self.seed = seed
         self.num_parallels = num_parallels
 
@@ -328,9 +337,15 @@ class DSFLClientTrainer(
         payload: DSFLDownlinkPackage,
         stop_event: threading.Event,
     ) -> DSFLUplinkPackage:
-        model = self.models[cid]
-        optimizer = self.optimizers[cid]
-        kd_optimizer = self.kd_optimizers[cid]
+        model = self.model_selector.select_model(self.model_name)
+        model.load_state_dict(self.model_states[cid])
+        model.to(device)
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
+        if (optimizer_state := self.optimizer_states[cid]) is not None:
+            optimizer.load_state_dict(optimizer_state)
+        kd_optimizer = torch.optim.SGD(model.parameters(), lr=self.kd_lr)
+        if (kd_optimizer_state := self.kd_optimizer_states[cid]) is not None:
+            kd_optimizer.load_state_dict(kd_optimizer_state)
         rng_suite = self.rng_suites[cid]
 
         # Distill
@@ -401,9 +416,9 @@ class DSFLClientTrainer(
             metadata={"loss": loss, "acc": acc},
         )
 
-        self.models[cid] = model
-        self.optimizers[cid] = optimizer
-        self.kd_optimizers[cid] = kd_optimizer
+        self.model_states[cid] = model.state_dict()
+        self.optimizer_states[cid] = optimizer.state_dict()
+        self.kd_optimizer_states[cid] = kd_optimizer.state_dict()
         self.rng_suites[cid] = rng_suite
         return package
 

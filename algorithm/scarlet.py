@@ -13,6 +13,7 @@ from blazefl.core import (
     ThreadPoolClientTrainer,
 )
 from blazefl.reproducibility import create_rng_suite
+from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
@@ -76,7 +77,8 @@ class SCARLETServerHandler(
         cache_duration: int,
         seed: int,
     ) -> None:
-        self.model = model_selector.select_model(CommonModelName(model_name))
+        self.model_selector = model_selector
+        self.model_name = model_name
         self.dataset = dataset
         self.global_round = global_round
         self.num_clients = num_clients
@@ -90,6 +92,8 @@ class SCARLETServerHandler(
         self.cache_duration = cache_duration
         self.seed = seed
 
+        self.model = self.model_selector.select_model(CommonModelName(self.model_name))
+        self.model.to(self.device)
         self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
         self.client_buffer_cache: list[SCARLETUplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
@@ -381,20 +385,23 @@ class SCARLETClientTrainer(
         num_parallels: int,
         public_size_per_round: int,
     ) -> None:
-        self.models = [
-            model_selector.select_model(model_name) for _ in range(num_clients)
+        self.model_states = [
+            model_selector.select_model(model_name).state_dict()
+            for _ in range(num_clients)
         ]
-        self.optimizers = [
-            torch.optim.SGD(model.parameters(), lr=lr) for model in self.models
+        self.optimizer_states: list[None | StateDict] = [
+            None for _ in range(num_clients)
         ]
-        self.kd_optimizers = [
-            torch.optim.SGD(model.parameters(), lr=kd_lr) for model in self.models
+        self.kd_optimizer_states: list[None | StateDict] = [
+            None for _ in range(num_clients)
         ]
         self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
         self.local_caches = [
             [LocalCacheEntry(soft_label=None) for _ in range(dataset.public_train_size)]
             for _ in range(num_clients)
         ]
+        self.model_selector = model_selector
+        self.model_name = model_name
         self.dataset = dataset
         self.device = device
         if self.device == "cuda":
@@ -402,8 +409,10 @@ class SCARLETClientTrainer(
         self.num_clients = num_clients
         self.epochs = epochs
         self.batch_size = batch_size
+        self.lr = lr
         self.kd_epochs = kd_epochs
         self.kd_batch_size = kd_batch_size
+        self.kd_lr = kd_lr
         self.seed = seed
         self.num_parallels = num_parallels
 
@@ -429,9 +438,15 @@ class SCARLETClientTrainer(
         payload: SCARLETDownlinkPackage,
         stop_event: threading.Event,
     ) -> SCARLETUplinkPackage:
-        model = self.models[cid]
-        optimizer = self.optimizers[cid]
-        kd_optimizer = self.kd_optimizers[cid]
+        model = self.model_selector.select_model(self.model_name)
+        model.load_state_dict(self.model_states[cid])
+        model.to(device)
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
+        if (optimizer_state := self.optimizer_states[cid]) is not None:
+            optimizer.load_state_dict(optimizer_state)
+        kd_optimizer = torch.optim.SGD(model.parameters(), lr=self.kd_lr)
+        if (kd_optimizer_state := self.kd_optimizer_states[cid]) is not None:
+            kd_optimizer.load_state_dict(kd_optimizer_state)
         rng_suite = self.rng_suites[cid]
         local_cache = self.local_caches[cid]
 
@@ -483,15 +498,17 @@ class SCARLETClientTrainer(
         )
 
         # Predict
-        public_loader = DataLoader(
-            Subset(public_dataset, payload.next_indices.tolist()),
-            batch_size=self.batch_size,
-        )
-        soft_labels = DSFLClientTrainer.predict(
-            model=model,
-            data_loader=public_loader,
-            device=device,
-        )
+        soft_labels = torch.empty(0)
+        if len(payload.next_indices) > 0:
+            public_loader = DataLoader(
+                Subset(public_dataset, payload.next_indices.tolist()),
+                batch_size=self.batch_size,
+            )
+            soft_labels = DSFLClientTrainer.predict(
+                model=model,
+                data_loader=public_loader,
+                device=device,
+            )
 
         # Evaluate
         test_loader = self.dataset.get_dataloader(
@@ -505,9 +522,9 @@ class SCARLETClientTrainer(
             device=device,
         )
 
-        self.models[cid] = model.cpu()
-        self.optimizers[cid] = optimizer
-        self.kd_optimizers[cid] = kd_optimizer
+        self.model_states[cid] = model.state_dict()
+        self.optimizer_states[cid] = optimizer.state_dict()
+        self.kd_optimizer_states[cid] = kd_optimizer.state_dict()
         self.rng_suites[cid] = rng_suite
         self.local_caches[cid] = local_cache
 
@@ -543,7 +560,7 @@ class SCARLETClientTrainer(
                 )
                 public_val_loss = DSFLServerHandler.distill(
                     model=model,
-                    optimizer=kd_optimizer,
+                    optimizer=torch.optim.SGD(model.parameters(), lr=self.kd_lr),
                     public_loader=public_val_loader,
                     global_soft_labels=global_val_soft_labels,
                     kd_epochs=self.kd_epochs,
