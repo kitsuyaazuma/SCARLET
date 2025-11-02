@@ -161,9 +161,10 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
         kd_batch_size: int,
         device: str,
         stop_event: threading.Event | None,
+        update_weights: bool = True,
     ) -> float:
         model.to(device)
-        model.train()
+        model.train(update_weights)
         global_soft_label_loader = DataLoader(
             FilteredDataset(
                 indices=list(range(len(global_soft_labels))),
@@ -181,17 +182,19 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
                 data = data.to(device)
                 soft_label = soft_label.to(device).squeeze(1)
 
-                output = model(data)
-                loss = F.kl_div(
-                    F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
-                )
+                with torch.set_grad_enabled(update_weights):
+                    output = model(data)
+                    loss = F.kl_div(
+                        F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
+                    )
                 if kd_epoch == kd_epochs - 1:
                     epoch_loss += loss.item() * soft_label.size(0)
                     epoch_samples += soft_label.size(0)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if update_weights:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
         avg_loss = epoch_loss / epoch_samples
         return avg_loss
