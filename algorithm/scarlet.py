@@ -355,7 +355,7 @@ class SCARLETClientTrainer(
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                open_loader=open_loader,
+                public_loader=open_loader,
                 global_soft_labels=global_soft_labels,
                 kd_epochs=self.kd_epochs,
                 kd_batch_size=self.kd_batch_size,

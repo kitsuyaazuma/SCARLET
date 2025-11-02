@@ -155,7 +155,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
     def distill(
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
-        open_loader: DataLoader,
+        public_loader: DataLoader,
         global_soft_labels: list[torch.Tensor],
         kd_epochs: int,
         kd_batch_size: int,
@@ -175,7 +175,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             if stop_event is not None and stop_event.is_set():
                 break
             for data, soft_label in zip(
-                open_loader, global_soft_label_loader, strict=True
+                public_loader, global_soft_label_loader, strict=True
             ):
                 data = data.to(device)
                 soft_label = soft_label.to(device).squeeze(1)
@@ -196,7 +196,6 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
     ) -> tuple[float, float]:
         model.to(device)
         model.eval()
-        criterion = torch.nn.CrossEntropyLoss()
 
         total_loss = 0.0
         total_correct = 0
@@ -207,15 +206,12 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
                 labels = labels.to(device)
 
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                loss = F.cross_entropy(outputs, labels, reduction="mean")
+                total_loss += loss.item() * labels.size(0)
 
-                _, predicted = torch.max(outputs, 1)
-                correct = torch.sum(predicted.eq(labels)).item()
-
-                batch_size = labels.size(0)
-                total_loss += loss.item() * batch_size
-                total_correct += int(correct)
-                total_samples += batch_size
+                predicted = outputs.argmax(dim=1)
+                total_correct += (predicted == labels).sum().item()
+                total_samples += labels.size(0)
 
         avg_loss = total_loss / total_samples
         avg_acc = total_correct / total_samples
@@ -342,7 +338,7 @@ class DSFLClientTrainer(
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                open_loader=open_loader,
+                public_loader=open_loader,
                 global_soft_labels=global_soft_labels,
                 kd_epochs=self.kd_epochs,
                 kd_batch_size=self.kd_batch_size,
