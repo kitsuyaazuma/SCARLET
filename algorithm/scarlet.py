@@ -266,7 +266,7 @@ class SCARLETServerHandler(
                 self.model,
                 self.kd_optimizer,
                 public_val_loader,
-                global_soft_labels,
+                val_global_soft_labels,
                 self.kd_epochs,
                 self.kd_batch_size,
                 self.device,

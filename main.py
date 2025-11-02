@@ -124,7 +124,7 @@ def main(
         device = "mps"
 
     config = locals()
-    run = wandb.init(mode="offline", config=config)
+    run = wandb.init(config=config)
 
     setup_logging()
     logging.info("\n" + "\n".join([f"  {k}: {v}" for k, v in config.items()]))
