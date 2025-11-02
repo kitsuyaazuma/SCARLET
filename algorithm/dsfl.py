@@ -88,7 +88,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
 
     def get_next_indices(self) -> torch.Tensor:
         shuffled_indices = torch.randperm(
-            self.dataset.public_size, generator=self.rng_suite.torch_cpu
+            self.dataset.public_train_size, generator=self.rng_suite.torch_cpu
         )
         return shuffled_indices[: self.public_size_per_round]
 

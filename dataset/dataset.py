@@ -29,6 +29,8 @@ class CommonPartitionType(StrEnum):
     TRAIN_PRIVATE = "TRAIN_PRIVATE"
     TRAIN_PUBLIC = "TRAIN_PUBLIC"
     TEST = "TEST"
+    VALIDATION_PRIVATE = "VALIDATION_PRIVATE"
+    VALIDATION_PUBLIC = "VALIDATION_PUBLIC"
 
 
 class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
@@ -43,6 +45,8 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         partition: CommonPartitionStrategy,
         dir_alpha: float,
         public_size: int,
+        private_val_ratio: float,
+        public_val_ratio: float,
     ) -> None:
         self.root = root
         self.path = path
@@ -53,6 +57,10 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         self.partition = partition
         self.dir_alpha = dir_alpha
         self.public_size = public_size
+        self.private_val_ratio = private_val_ratio
+        self.public_val_ratio = public_val_ratio
+        self.public_train_size = int(public_size * (1 - public_val_ratio))
+        self.public_val_size = public_size - self.public_train_size
 
         self.rng_suite = create_rng_suite(seed)
 
@@ -78,6 +86,7 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
     def _preprocess(self):
         self.root.mkdir(parents=True, exist_ok=True)
         assert self.private_task != self.public_task
+
         match self.private_task:
             case CommonPrivateTask.CIFAR10:
                 private_dataset = torchvision.datasets.CIFAR10(
@@ -134,16 +143,37 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
                 )
 
         for cid, indices in private_client_dict.items():
-            client_private_dataset = FilteredDataset(
-                indices.tolist(),
+            train_indices = self.rng_suite.numpy.choice(
+                indices,
+                size=int(len(indices) * (1 - self.private_val_ratio)),
+                replace=False,
+            )
+            val_indices = list(set(indices) - set(train_indices))
+
+            client_private_train_dataset = FilteredDataset(
+                train_indices.tolist(),
                 private_dataset.data,
                 private_dataset.targets,
                 transform=self.train_transform,
             )
             torch.save(
-                client_private_dataset,
+                client_private_train_dataset,
                 self.path.joinpath(CommonPartitionType.TRAIN_PRIVATE, f"{cid}.pkl"),
             )
+
+            if self.private_val_ratio > 0.0:
+                client_private_val_dataset = FilteredDataset(
+                    val_indices,
+                    private_dataset.data,
+                    private_dataset.targets,
+                    transform=self.test_transform,
+                )
+                torch.save(
+                    client_private_val_dataset,
+                    self.path.joinpath(
+                        CommonPartitionType.VALIDATION_PRIVATE, f"{cid}.pkl"
+                    ),
+                )
 
         for cid, indices in test_client_dict.items():
             client_test_dataset = FilteredDataset(
@@ -157,20 +187,6 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
                 self.path.joinpath(CommonPartitionType.TEST, f"{cid}.pkl"),
             )
 
-        public_indices = self.rng_suite.numpy.choice(
-            len(public_dataset),
-            size=self.public_size,
-        )
-        torch.save(
-            FilteredDataset(
-                public_indices.tolist(),
-                public_dataset.data,
-                original_targets=None,
-                transform=self.train_transform,
-            ),
-            self.path.joinpath(CommonPartitionType.TRAIN_PUBLIC, "public.pkl"),
-        )
-
         torch.save(
             FilteredDataset(
                 list(range(len(test_dataset))),
@@ -181,14 +197,52 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
             self.path.joinpath(CommonPartitionType.TEST, "test.pkl"),
         )
 
+        public_indices = self.rng_suite.numpy.choice(
+            len(public_dataset),
+            size=self.public_size,
+            replace=False,
+        )
+        public_train_indices = self.rng_suite.numpy.choice(
+            public_indices,
+            size=self.public_train_size,
+            replace=False,
+        )
+        torch.save(
+            FilteredDataset(
+                public_train_indices.tolist(),
+                public_dataset.data,
+                original_targets=None,
+                transform=self.train_transform,
+            ),
+            self.path.joinpath(CommonPartitionType.TRAIN_PUBLIC, "public.pkl"),
+        )
+        if self.public_val_ratio > 0.0:
+            public_val_indices = list(
+                set(public_indices.tolist()) - set(public_train_indices.tolist())
+            )
+            torch.save(
+                FilteredDataset(
+                    public_val_indices,
+                    public_dataset.data,
+                    original_targets=None,
+                    transform=self.test_transform,
+                ),
+                self.path.joinpath(CommonPartitionType.VALIDATION_PUBLIC, "public.pkl"),
+            )
+
     def get_dataset(self, type_: CommonPartitionType, cid: int | None) -> Dataset:
         match type_:
-            case CommonPartitionType.TRAIN_PRIVATE:
+            case (
+                CommonPartitionType.TRAIN_PRIVATE
+                | CommonPartitionType.VALIDATION_PRIVATE
+            ):
                 dataset = torch.load(
                     self.path.joinpath(type_, f"{cid}.pkl"),
                     weights_only=False,
                 )
-            case CommonPartitionType.TRAIN_PUBLIC:
+            case (
+                CommonPartitionType.TRAIN_PUBLIC | CommonPartitionType.VALIDATION_PUBLIC
+            ):
                 dataset = torch.load(
                     self.path.joinpath(type_, "public.pkl"),
                     weights_only=False,
@@ -209,15 +263,20 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         self, type_: CommonPartitionType, cid: int | None, dataset: Dataset
     ) -> None:
         match type_:
-            case CommonPartitionType.TRAIN_PRIVATE:
+            case (
+                CommonPartitionType.TRAIN_PRIVATE
+                | CommonPartitionType.VALIDATION_PRIVATE
+            ):
                 torch.save(dataset, self.path.joinpath(type_, f"{cid}.pkl"))
-            case CommonPartitionType.TRAIN_PUBLIC:
+            case (
+                CommonPartitionType.TRAIN_PUBLIC | CommonPartitionType.VALIDATION_PUBLIC
+            ):
                 torch.save(dataset, self.path.joinpath(f"{type_}.pkl"))
             case CommonPartitionType.TEST:
                 if cid is not None:
                     torch.save(dataset, self.path.joinpath(type_, f"{cid}.pkl"))
                 else:
-                    torch.save(dataset, self.path.joinpath(type_, "default.pkl"))
+                    torch.save(dataset, self.path.joinpath(type_, "test.pkl"))
 
     def get_dataloader(
         self,

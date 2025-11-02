@@ -92,7 +92,7 @@ class SCARLETServerHandler(
 
         self.global_cache: list[GlobalCacheEntry] = [
             GlobalCacheEntry(soft_label=None, round=0)
-            for _ in range(self.dataset.public_size)
+            for _ in range(self.dataset.public_train_size)
         ]
         self.cache_signals: torch.Tensor | None = None
         self.rng_suite = create_rng_suite(seed)
@@ -106,7 +106,7 @@ class SCARLETServerHandler(
 
     def get_next_indices(self) -> torch.Tensor:
         shuffled_indices = torch.randperm(
-            self.dataset.public_size, generator=self.rng_suite.torch_cpu
+            self.dataset.public_train_size, generator=self.rng_suite.torch_cpu
         )
         next_indices = shuffled_indices[: self.public_size_per_round]
         self.cached_indices = []
@@ -289,7 +289,7 @@ class SCARLETClientTrainer(
         ]
         self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
         self.local_caches = [
-            [LocalCacheEntry(soft_label=None) for _ in range(dataset.public_size)]
+            [LocalCacheEntry(soft_label=None) for _ in range(dataset.public_train_size)]
             for _ in range(num_clients)
         ]
         self.dataset = dataset

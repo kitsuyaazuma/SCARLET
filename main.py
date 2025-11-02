@@ -81,6 +81,12 @@ def main(
     public_size_per_round: Annotated[
         int, typer.Option(help="Number of public samples used per round.")
     ] = 1000,
+    private_val_ratio: Annotated[
+        float, typer.Option(help="Validation ratio for private datasets.")
+    ] = 0.0,
+    public_val_ratio: Annotated[
+        float, typer.Option(help="Validation ratio for public dataset.")
+    ] = 0.0,
     sample_ratio: Annotated[
         float, typer.Option(help="Fraction of clients to sample in each round.")
     ] = 1.0,
@@ -138,6 +144,8 @@ def main(
         partition=partition,
         dir_alpha=dir_alpha,
         public_size=public_size,
+        private_val_ratio=private_val_ratio,
+        public_val_ratio=public_val_ratio,
     )
     model_selector = CommonModelSelector(num_classes=dataset.num_classes, seed=seed)
 
