@@ -131,7 +131,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             global_soft_labels.append(era_soft_labels)
 
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         public_loader = DataLoader(
             Subset(public_dataset, global_indices),
@@ -326,7 +326,7 @@ class DSFLClientTrainer(
 
         # Distill
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         if payload.indices is not None and payload.soft_labels is not None:
             global_soft_labels = list(torch.unbind(payload.soft_labels, dim=0))
@@ -348,7 +348,7 @@ class DSFLClientTrainer(
 
         # Train
         private_loader = self.dataset.get_dataloader(
-            type_=CommonPartitionType.PRIVATE,
+            type_=CommonPartitionType.TRAIN_PRIVATE,
             cid=cid,
             batch_size=self.batch_size,
             generator=rng_suite.torch_cpu,

@@ -174,7 +174,7 @@ class SCARLETServerHandler(
         self.cache_signals = torch.tensor([signal.value for signal in cache_signals])
 
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         public_loader = DataLoader(
             Subset(public_dataset, global_indices),
@@ -334,7 +334,7 @@ class SCARLETClientTrainer(
 
         # Distill
         public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.PUBLIC, cid=None
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
         )
         if (
             payload.indices is not None
@@ -365,7 +365,7 @@ class SCARLETClientTrainer(
 
         # Train
         private_loader = self.dataset.get_dataloader(
-            type_=CommonPartitionType.PRIVATE,
+            type_=CommonPartitionType.TRAIN_PRIVATE,
             cid=cid,
             batch_size=self.batch_size,
             generator=rng_suite.torch_cpu,

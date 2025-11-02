@@ -26,8 +26,8 @@ class CommonPartitionStrategy(StrEnum):
 
 
 class CommonPartitionType(StrEnum):
-    PRIVATE = "PRIVATE"
-    PUBLIC = "PUBLIC"
+    TRAIN_PRIVATE = "TRAIN_PRIVATE"
+    TRAIN_PUBLIC = "TRAIN_PUBLIC"
     TEST = "TEST"
 
 
@@ -142,7 +142,7 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
             )
             torch.save(
                 client_private_dataset,
-                self.path.joinpath(CommonPartitionType.PRIVATE, f"{cid}.pkl"),
+                self.path.joinpath(CommonPartitionType.TRAIN_PRIVATE, f"{cid}.pkl"),
             )
 
         for cid, indices in test_client_dict.items():
@@ -168,7 +168,7 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
                 original_targets=None,
                 transform=self.train_transform,
             ),
-            self.path.joinpath(CommonPartitionType.PUBLIC, "public.pkl"),
+            self.path.joinpath(CommonPartitionType.TRAIN_PUBLIC, "public.pkl"),
         )
 
         torch.save(
@@ -183,12 +183,12 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
 
     def get_dataset(self, type_: CommonPartitionType, cid: int | None) -> Dataset:
         match type_:
-            case CommonPartitionType.PRIVATE:
+            case CommonPartitionType.TRAIN_PRIVATE:
                 dataset = torch.load(
                     self.path.joinpath(type_, f"{cid}.pkl"),
                     weights_only=False,
                 )
-            case CommonPartitionType.PUBLIC:
+            case CommonPartitionType.TRAIN_PUBLIC:
                 dataset = torch.load(
                     self.path.joinpath(type_, "public.pkl"),
                     weights_only=False,
@@ -209,9 +209,9 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         self, type_: CommonPartitionType, cid: int | None, dataset: Dataset
     ) -> None:
         match type_:
-            case CommonPartitionType.PRIVATE:
+            case CommonPartitionType.TRAIN_PRIVATE:
                 torch.save(dataset, self.path.joinpath(type_, f"{cid}.pkl"))
-            case CommonPartitionType.PUBLIC:
+            case CommonPartitionType.TRAIN_PUBLIC:
                 torch.save(dataset, self.path.joinpath(f"{type_}.pkl"))
             case CommonPartitionType.TEST:
                 if cid is not None:
@@ -232,7 +232,7 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         data_loader = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=type_ == CommonPartitionType.PRIVATE,
+            shuffle=type_ == CommonPartitionType.TRAIN_PRIVATE,
             generator=generator,
             num_workers=0,
         )
