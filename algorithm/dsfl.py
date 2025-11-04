@@ -322,6 +322,9 @@ class DSFLClientTrainer(
             (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
+        self.public_dataset = self.dataset.get_dataset(
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
+        )
         self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
 
     def progress_fn(
@@ -349,14 +352,11 @@ class DSFLClientTrainer(
         rng_suite = self.rng_suites[cid]
 
         # Distill
-        public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
-        )
         if payload.indices is not None and payload.soft_labels is not None:
             global_soft_labels = list(torch.unbind(payload.soft_labels, dim=0))
             global_indices = payload.indices.tolist()
             open_loader = DataLoader(
-                Subset(public_dataset, global_indices),
+                Subset(self.public_dataset, global_indices),
                 batch_size=self.kd_batch_size,
             )
             DSFLServerHandler.distill(
@@ -388,7 +388,7 @@ class DSFLClientTrainer(
 
         # Predict
         public_loader = DataLoader(
-            Subset(public_dataset, payload.next_indices.tolist()),
+            Subset(self.public_dataset, payload.next_indices.tolist()),
             batch_size=self.batch_size,
         )
         soft_labels = DSFLClientTrainer.predict(

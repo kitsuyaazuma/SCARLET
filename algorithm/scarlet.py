@@ -209,6 +209,7 @@ class SCARLETServerHandler(
         public_loader = DataLoader(
             Subset(public_dataset, global_indices),
             batch_size=self.kd_batch_size,
+            num_workers=0,
         )
         self.public_train_loss = DSFLServerHandler.distill(
             self.model,
@@ -265,6 +266,7 @@ class SCARLETServerHandler(
             public_val_loader = DataLoader(
                 Subset(self.public_val_dataset, val_global_indices),
                 batch_size=self.kd_batch_size,
+                num_workers=0,
             )
             self.public_val_loss = DSFLServerHandler.distill(
                 self.model,
@@ -423,6 +425,9 @@ class SCARLETClientTrainer(
             (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
+        self.public_dataset = self.dataset.get_dataset(
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
+        )
         self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
 
     def progress_fn(
@@ -451,9 +456,6 @@ class SCARLETClientTrainer(
         local_cache = self.local_caches[cid]
 
         # Distill
-        public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
-        )
         if (
             payload.indices is not None
             and payload.soft_labels is not None
@@ -467,8 +469,9 @@ class SCARLETClientTrainer(
             )
             global_indices = payload.indices.tolist()
             open_loader = DataLoader(
-                Subset(public_dataset, global_indices),
+                Subset(self.public_dataset, global_indices),
                 batch_size=self.kd_batch_size,
+                num_workers=0,
             )
             DSFLServerHandler.distill(
                 model=model,
@@ -501,8 +504,9 @@ class SCARLETClientTrainer(
         soft_labels = torch.empty(0)
         if len(payload.next_indices) > 0:
             public_loader = DataLoader(
-                Subset(public_dataset, payload.next_indices.tolist()),
+                Subset(self.public_dataset, payload.next_indices.tolist()),
                 batch_size=self.batch_size,
+                num_workers=0,
             )
             soft_labels = DSFLClientTrainer.predict(
                 model=model,
@@ -554,6 +558,7 @@ class SCARLETClientTrainer(
                 public_val_loader = DataLoader(
                     Subset(public_val_dataset, payload.val_indices.tolist()),
                     batch_size=self.kd_batch_size,
+                    num_workers=0,
                 )
                 global_val_soft_labels = list(
                     torch.unbind(payload.val_soft_labels, dim=0)
@@ -574,6 +579,7 @@ class SCARLETClientTrainer(
                 public_val_loader = DataLoader(
                     Subset(public_val_dataset, payload.val_next_indices.tolist()),
                     batch_size=self.batch_size,
+                    num_workers=0,
                 )
                 val_soft_labels = DSFLClientTrainer.predict(
                     model=model,

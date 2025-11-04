@@ -71,7 +71,7 @@ def main(
     ] = 5,
     kd_epochs: Annotated[
         int, typer.Option(help="Number of epochs for knowledge distillation.")
-    ] = 1,
+    ] = 5,
     kd_batch_size: Annotated[
         int, typer.Option(help="Batch size for knowledge distillation.")
     ] = 50,
@@ -231,6 +231,4 @@ def main(
 
 
 if __name__ == "__main__":
-    # mp.set_start_method("spawn")
-
     typer.run(main)
