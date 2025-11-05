@@ -47,12 +47,18 @@ class PartitionedDataset:
     private_task: str
     public_task: str
     public_size: int
+    validation_ratio: float
     train_batch_size: int
     test_batch_size: int
 
     def __post_init__(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.joinpath("validation").mkdir(parents=True, exist_ok=True)
         self.num_classes = CLASS_NUM[self.private_task]
+        self.public_train_size = self.public_size - int(
+            self.public_size * self.validation_ratio
+        )
+        self.public_validation_size = int(self.public_size * self.validation_ratio)
         self._prepare()
 
     def _get_transform(self, task: str, train: bool):
@@ -113,7 +119,7 @@ class PartitionedDataset:
         stats_df = pd.DataFrame.from_dict(
             stats_dict,
             orient="index",
-            columns=list(map(str, range(self.num_classes))),
+            columns=list(map(str, range(self.num_classes))),  # type: ignore
         )
         stats_df.to_csv(dir.joinpath("distribution.csv"))
         del self.train_targets, self.client_to_indices
@@ -126,6 +132,7 @@ class PartitionedDataset:
         public_split = "train"
         public_trainset = self._get_dataset(task=self.public_task, split=public_split)
         public_train_transform = self._get_transform(task=self.public_task, train=True)
+        public_val_transform = self._get_transform(task=self.public_task, train=False)
         testset = self._get_dataset(task=self.private_task, split="test")
         test_transform = self._get_transform(task=self.private_task, train=False)
         match self.partition:
@@ -169,6 +176,13 @@ class PartitionedDataset:
         for client_id, indices in tqdm(
             self.client_to_indices.items(), desc="Saving train data"
         ):
+            train_indices = np.random.choice(
+                indices,
+                size=int(len(indices) * (1 - self.validation_ratio)),
+                replace=False,
+            )
+            val_indices = list(set(indices) - set(train_indices))
+
             torch.save(
                 Subset(
                     dataset=private_trainset,
@@ -176,6 +190,14 @@ class PartitionedDataset:
                     transform=private_train_transform,
                 ),
                 train_dir.joinpath(f"{client_id}.pkl"),
+            )
+            torch.save(
+                Subset(
+                    dataset=private_trainset,
+                    indices=val_indices,
+                    transform=test_transform,
+                ),
+                self.data_dir.joinpath("validation").joinpath(f"{client_id}.pkl"),
             )
 
         test_dir = self.data_dir.joinpath("test")
@@ -200,21 +222,41 @@ class PartitionedDataset:
         )
 
         public_indices = random.sample(range(len(public_trainset)), self.public_size)
+        public_train_indices = np.random.choice(
+            public_indices,
+            size=int(len(public_indices) * (1 - self.validation_ratio)),
+            replace=False,
+        )
+        public_val_indices = list(set(public_indices) - set(public_train_indices))
         if isinstance(public_trainset, torchvision.datasets.Caltech256):
             public_subset = Caltech256Subset(
                 dataset=public_trainset,
-                indices=public_indices,
+                indices=public_train_indices,
                 transform=public_train_transform,
+            )
+            public_val_subset = Caltech256Subset(
+                dataset=public_trainset,
+                indices=public_val_indices,
+                transform=public_val_transform,
             )
         else:
             public_subset = Subset(
                 dataset=public_trainset,
-                indices=public_indices,
+                indices=public_train_indices,
                 transform=public_train_transform,
+            )
+            public_val_subset = Subset(
+                dataset=public_trainset,
+                indices=public_val_indices,
+                transform=public_val_transform,
             )
         torch.save(
             public_subset,
             self.data_dir.joinpath("public_train.pkl"),
+        )
+        torch.save(
+            public_val_subset,
+            self.data_dir.joinpath("public_validation.pkl"),
         )
 
     def get_private_train_dataset(self, client_id: int) -> Dataset:
@@ -224,8 +266,20 @@ class PartitionedDataset:
         assert isinstance(dataset, Dataset)
         return dataset
 
+    def get_private_validation_dataset(self, client_id: int) -> Dataset:
+        dataset = torch.load(
+            self.data_dir.joinpath("validation").joinpath(f"{client_id}.pkl")
+        )
+        assert isinstance(dataset, Dataset)
+        return dataset
+
     def get_public_train_dataset(self) -> Dataset:
         dataset = torch.load(self.data_dir.joinpath("public_train.pkl"))
+        assert isinstance(dataset, Dataset)
+        return dataset
+
+    def get_public_validation_dataset(self) -> Dataset:
+        dataset = torch.load(self.data_dir.joinpath("public_validation.pkl"))
         assert isinstance(dataset, Dataset)
         return dataset
 

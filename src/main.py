@@ -72,6 +72,7 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
         public_size=cfg.public_size,
         train_batch_size=cfg.batch_size,
         test_batch_size=cfg.test_batch_size,
+        validation_ratio=cfg.validation_ratio,
     )
     partitioned_dataset.save_distribution_stats(dir=Path(log_dir))
 
@@ -115,6 +116,7 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
                 era_exponent=cfg.algorithm.era_exponent,
                 cache_ratio=cfg.algorithm.cache_ratio,
                 cache_duration=cfg.algorithm.cache_duration,
+                analysis_dir=analysis_dir,
             )
             trainer = SCARLETParallelClientTrainer(
                 model_name=cfg.client_model,

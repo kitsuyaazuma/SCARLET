@@ -7,6 +7,8 @@ dir_alpha: 0.3
 seed: 42
 public_size: 10000
 public_size_per_round: 1000
+# Support only for SCARLET
+validation_ratio: 0.0
 sample_ratio: 1.0
 global_round: 2000
 num_clients: 100
