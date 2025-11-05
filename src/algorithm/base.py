@@ -53,18 +53,25 @@ class BaseClientWorkerProcess:
             )
         self.save_dict: dict = {}
 
-    def train(self):
+    def train(self) -> tuple[float, float]:
         self.model.train()
 
         trainset = self.dataset.get_private_train_dataset(self.client_id)
         train_loader = DataLoader(trainset, batch_size=self.batch_size, shuffle=True)
 
-        for _ in range(self.epochs):
+        epoch_loss, epoch_correct, epoch_samples = 0.0, 0, 0
+        for epoch in range(self.epochs):
             for data, target in train_loader:
                 data, target = data.to(self.device), target.to(self.device)
 
                 output = self.model(data)
                 loss = self.criterion(output, target)
+
+                if epoch == self.epochs - 1:
+                    epoch_loss += loss.item() * data.size(0)
+                    _, pred = output.max(1)
+                    epoch_correct += pred.eq(target).sum().item()
+                    epoch_samples += data.size(0)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -72,6 +79,7 @@ class BaseClientWorkerProcess:
 
         self.save_dict["model"] = self.model.state_dict()
         self.save_dict["optimizer"] = self.optimizer.state_dict()
+        return epoch_loss / epoch_samples, epoch_correct / epoch_samples
 
     def evaluate(self, round: int | None = None):
         self.model.eval()

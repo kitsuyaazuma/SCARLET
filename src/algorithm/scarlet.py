@@ -1,3 +1,4 @@
+import csv
 import os
 from collections import defaultdict, deque
 import enum
@@ -38,6 +39,22 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             self.kd_optimizer.load_state_dict(
                 torch.load(self.state_dict_path)["kd_optimizer"]
             )
+        self.metrics_dir = self.analysis_dir.joinpath("metrics")
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_path = self.metrics_dir.joinpath(f"{self.client_id}.csv")
+        self.header = [
+            "private_train_loss",
+            "private_train_acc",
+            "private_val_loss",
+            "private_val_acc",
+            "public_train_loss",
+            "public_val_loss",
+        ]
+        if not self.csv_path.exists():
+            with open(self.csv_path, "w") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.header)
+        self.metrics: dict[str, float] = {}
 
     def set_cache(self, new_cache: torch.Tensor):
         self.new_cache_list = new_cache.tolist()
@@ -52,6 +69,12 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             for index, prob in zip(indices, probs):
                 self.cache[index.item()] = prob
         self.save_dict["cache"] = self.cache
+
+    def train(self) -> tuple[float, float]:
+        loss, acc = super().train()
+        self.metrics["private_train_loss"] = loss
+        self.metrics["private_train_acc"] = acc
+        return loss, acc
 
     def distill(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
         if public_probs.numel() != 0 and public_indices.numel() != 0:
@@ -72,8 +95,96 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             public_probs = torch.stack(public_probs_with_cache)
             assert public_probs.shape[0] == public_indices.shape[0]
 
-        super().distill(public_probs, public_indices)
+        loss = super().distill(public_probs, public_indices)
+        self.metrics["public_train_loss"] = loss
         self.save_dict["cache"] = self.cache
+
+    def validate(
+        self,
+        public_probs: torch.Tensor,
+        public_indices: torch.Tensor,
+        next_public_indices: torch.Tensor,
+    ):
+        self.model.eval()
+        epoch_loss, epoch_samples = 0.0, 0
+        if public_probs.numel() != 0 and public_indices.numel() != 0:
+            public_data_loader = DataLoader(
+                Subset(
+                    self.dataset.get_public_train_dataset(), public_indices.tolist()
+                ),
+                batch_size=self.kd_batch_size,
+            )
+            public_probs_loader = DataLoader(
+                NonLabelDataset(data=list(torch.unbind(public_probs, dim=0))),
+                batch_size=self.kd_batch_size,
+            )
+            for kd_epoch in range(self.kd_epochs):
+                for (data, _), probs in zip(public_data_loader, public_probs_loader):
+                    data, probs = data.to(self.device), probs.to(self.device)
+
+                    output = F.log_softmax(self.model(data), dim=1)
+                    kd_loss = self.kd_criterion(output, probs.squeeze(1))
+
+                    if kd_epoch == self.kd_epochs - 1:
+                        epoch_loss += kd_loss.item() * data.size(0)
+                        epoch_samples += data.size(0)
+        self.metrics["public_val_loss"] = (
+            epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
+        )
+
+        loss_sum = 0.0
+        acc_sum = 0.0
+        total = 0
+        valset = self.dataset.get_private_validation_dataset(self.client_id)
+        val_loader = DataLoader(valset, batch_size=100, shuffle=False)
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
+                outputs = self.model(inputs)
+                loss_ = F.cross_entropy(outputs, labels)
+
+                _, pred = outputs.topk(5, 1, largest=True, sorted=True)
+
+                labels = labels.view(labels.size(0), -1).expand_as(pred)
+                correct = pred.eq(labels).float()
+
+                acc_sum += correct[:, :1].sum().item()
+
+                loss_sum += loss_.item()
+                total += labels.size(0)
+
+        loss = loss_sum / len(val_loader)
+        acc = acc_sum / total
+        self.metrics["private_val_loss"] = loss
+        self.metrics["private_val_acc"] = acc
+
+        if next_public_indices.numel() != 0:
+            predict_data_loader = DataLoader(
+                Subset(
+                    self.dataset.get_public_validation_dataset(),
+                    next_public_indices.tolist(),
+                ),
+                batch_size=self.batch_size,
+            )
+
+            local_probs: list[torch.Tensor] = []
+            with torch.no_grad():
+                for data, _ in predict_data_loader:
+                    data = data.to(self.device)
+
+                    output = self.model(data)
+                    probs = F.softmax(output, dim=1)
+                    local_probs.extend([prob.detach().cpu() for prob in probs])
+
+            return torch.stack(local_probs), next_public_indices
+        return torch.empty(0), torch.empty(0)
+
+    def save(self):
+        super().save()
+        with open(self.csv_path, "a") as f:
+            writer = csv.writer(f)
+            row = [self.metrics[name] for name in self.header]
+            writer.writerow(row)
 
 
 def scarlet_client_worker(
@@ -86,6 +197,9 @@ def scarlet_client_worker(
     next_indices: torch.Tensor,
     new_cache: torch.Tensor,
     cache_update: list[torch.Tensor] | None,
+    val_public_probs: torch.Tensor,
+    val_public_indices: torch.Tensor,
+    next_val_public_indices: torch.Tensor,
     round: int | None = None,
 ) -> list[torch.Tensor]:
     process.prepare(device, client_id, dataset)
@@ -99,8 +213,14 @@ def scarlet_client_worker(
     else:
         probs, indices = process.predict(next_indices)
     process.evaluate(round)
+    package = [probs, indices]
+    if dataset.validation_ratio > 0:
+        val_probs, val_indices = process.validate(
+            val_public_probs, val_public_indices, next_val_public_indices
+        )
+        package.extend([val_probs, val_indices])
     process.save()
-    return [probs, indices]
+    return package
 
 
 class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
@@ -136,13 +256,32 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
         payload: tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]],
         id_list: list[int],
     ):
-        public_probs, public_indices, next_indices, new_cache = payload[0]
+        if self.dataset.validation_ratio == 0:
+            public_probs, public_indices, next_indices, new_cache = payload[0]
+            val_public_probs, val_public_indices, next_val_public_indices = (
+                torch.empty(0),
+                torch.empty(0),
+                torch.empty(0),
+            )
+        else:
+            (
+                public_probs,
+                public_indices,
+                next_indices,
+                new_cache,
+                val_public_probs,
+                val_public_indices,
+                next_val_public_indices,
+            ) = payload[0]
         cache_update_by_client = payload[1]
 
         public_probs.share_memory_()
         public_indices.share_memory_()
         next_indices.share_memory_()
         new_cache.share_memory_()
+        val_public_probs.share_memory_()
+        val_public_indices.share_memory_()
+        next_val_public_indices.share_memory_()
 
         pool = mp.Pool(processes=self.num_parallels)
         jobs = [
@@ -158,6 +297,9 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
                     next_indices,
                     new_cache,
                     cache_update_by_client.get(client_id, None),
+                    val_public_probs,
+                    val_public_indices,
+                    next_val_public_indices,
                     self.round,
                 ),
             )
@@ -185,6 +327,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         era_exponent: float,
         cache_ratio: float,
         cache_duration: int,
+        analysis_dir: Path,
     ):
         super(DSFLServerHandler, self).__init__(
             model_name, global_round, sample_ratio, cuda, public_size_per_round, dataset
@@ -205,6 +348,23 @@ class SCARLETServerHandler(DSFLServerHandler):
         ]
         self.cache_update_by_client: dict[int, list[torch.Tensor]] = {}
         self.sampled_clients: list[int] = []
+
+        self.metrics_dir = analysis_dir.joinpath("metrics")
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.header = [
+            "public_train_loss",
+            "public_val_loss",
+        ]
+        self.csv_path = self.metrics_dir.joinpath("server.csv")
+        if not self.csv_path.exists():
+            with open(self.csv_path, "w") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.header)
+        self.metrics: dict[str, float] = {}
+        self.public_val_probs = torch.empty(0)
+        self.public_val_indices = torch.empty(0)
+        self.next_public_val_indices = torch.empty(0)
+
         self.set_next_public_indices()
 
         self.enable_instrumentation = (
@@ -236,6 +396,11 @@ class SCARLETServerHandler(DSFLServerHandler):
             else:
                 next_request_indices.append(i)
         self.next_public_indices = torch.tensor(next_request_indices)
+
+        if self.dataset.validation_ratio > 0:
+            self.next_public_val_indices = torch.randperm(
+                self.dataset.public_validation_size
+            )
 
     def global_update(self, buffer: list[list[torch.Tensor]]) -> None:  # noqa: C901
         probs_list = [ele[0] for ele in buffer]
@@ -326,7 +491,8 @@ class SCARLETServerHandler(DSFLServerHandler):
             NonLabelDataset(data=public_probs),
             batch_size=self.kd_batch_size,
         )
-        for _ in range(self.kd_epochs):
+        epoch_loss, epoch_samples = 0.0, 0
+        for kd_epoch in range(self.kd_epochs):
             for (data, target), prob in zip(public_loader, public_probs_loader):
                 if self.cuda:
                     data = data.cuda(self.device)
@@ -336,10 +502,67 @@ class SCARLETServerHandler(DSFLServerHandler):
                 output = F.log_softmax(self.model(data), dim=1)
                 prob = prob.squeeze(1)
                 kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
+                if kd_epoch == self.kd_epochs - 1:
+                    epoch_loss += kd_loss.item() * data.size(0)
+                    epoch_samples += data.size(0)
 
                 self.kd_optimizer.zero_grad()
                 kd_loss.backward()
                 self.kd_optimizer.step()
+        self.metrics["public_train_loss"] = epoch_loss / epoch_samples
+
+        if self.dataset.validation_ratio > 0:
+            val_probs_list = [ele[2] for ele in buffer]
+            val_indices_list = [ele[3] for ele in buffer]
+            val_public_probs_stack = defaultdict(list)
+            for probs, indices in zip(val_probs_list, val_indices_list):
+                if probs.numel() == 0 and indices.numel() == 0:
+                    continue
+                for prob, indice in zip(probs, indices):
+                    val_public_probs_stack[indice.item()].append(prob)
+            val_public_probs: list[torch.Tensor] = []
+            val_public_indices: list[int] = []
+            for index, probs_by_index in val_public_probs_stack.items():
+                val_public_indices.append(index)
+                mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
+                # Enhanced Entropy Reduction Aggregation
+                era_prob = mean_prob**self.era_exponent / torch.sum(
+                    mean_prob**self.era_exponent
+                )
+                val_public_probs.append(era_prob)
+            self.public_val_indices = torch.tensor(val_public_indices)
+            self.public_val_probs = torch.stack(val_public_probs)
+
+            self.model.eval()
+            public_val_subset = Subset(
+                self.dataset.get_public_validation_dataset(), val_public_indices
+            )
+            public_val_loader = DataLoader(
+                public_val_subset, batch_size=self.kd_batch_size
+            )
+            public_val_probs_loader = DataLoader(
+                NonLabelDataset(data=val_public_probs),
+                batch_size=self.kd_batch_size,
+            )
+            val_loss, val_samples = 0.0, 0
+            with torch.no_grad():
+                for (data, target), prob in zip(
+                    public_val_loader, public_val_probs_loader
+                ):
+                    if self.cuda:
+                        data = data.cuda(self.device)
+                        target = target.cuda(self.device)
+                        prob = prob.cuda(self.device)
+
+                    output = F.log_softmax(self.model(data), dim=1)
+                    prob = prob.squeeze(1)
+                    kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
+                    if kd_epoch == self.kd_epochs - 1:
+                        val_loss += kd_loss.item() * data.size(0)
+                        val_samples += data.size(0)
+            self.metrics["public_val_loss"] = (
+                val_loss / val_samples if val_samples > 0 else 0.0
+            )
 
         self.public_indices = torch.tensor(public_indices)
         not_already_cached_probs = [
@@ -352,6 +575,12 @@ class SCARLETServerHandler(DSFLServerHandler):
         else:
             self.public_probs = torch.stack(not_already_cached_probs)
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
+
+        with open(self.csv_path, "a") as f:
+            writer = csv.writer(f)
+            row = [self.metrics[name] for name in self.header]
+            writer.writerow(row)
+        self.metrics = {}
 
         self.set_next_public_indices()
 
@@ -422,6 +651,11 @@ class SCARLETServerHandler(DSFLServerHandler):
     ) -> tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]]:
         downlink_package = super().downlink_package
         downlink_package.append(self.new_cache)
+
+        if self.dataset.validation_ratio > 0:
+            downlink_package.append(self.public_val_probs)
+            downlink_package.append(self.public_val_indices)
+            downlink_package.append(self.next_public_val_indices)
 
         # keep mock cache up-to-date for each selected client
         public_indices = downlink_package[1]

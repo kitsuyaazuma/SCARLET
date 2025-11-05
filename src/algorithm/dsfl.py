@@ -35,8 +35,11 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                 torch.load(self.state_dict_path)["kd_optimizer"]
             )
 
-    def distill(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
+    def distill(
+        self, public_probs: torch.Tensor, public_indices: torch.Tensor
+    ) -> float:
         self.model.train()
+        epoch_loss, epoch_samples = 0.0, 0
         if public_probs.numel() != 0 and public_indices.numel() != 0:
             public_data_loader = DataLoader(
                 Subset(
@@ -48,7 +51,7 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                 NonLabelDataset(data=list(torch.unbind(public_probs, dim=0))),
                 batch_size=self.kd_batch_size,
             )
-            for _ in range(self.kd_epochs):
+            for kd_epoch in range(self.kd_epochs):
                 for (data, _), probs in zip(public_data_loader, public_probs_loader):
                     data, probs = data.to(self.device), probs.to(self.device)
 
@@ -58,8 +61,12 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                     self.kd_optimizer.zero_grad()
                     kd_loss.backward()
                     self.kd_optimizer.step()
+                    if kd_epoch == self.kd_epochs - 1:
+                        epoch_loss += kd_loss.item() * data.size(0)
+                        epoch_samples += data.size(0)
 
         self.save_dict["kd_optimizer"] = self.kd_optimizer.state_dict()
+        return epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
 
     def predict(self, next_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self.model.eval()
@@ -201,7 +208,7 @@ class DSFLServerHandler(BaseServerHandler):
         self.kd_criterion = F.kl_div
 
     def set_next_public_indices(self) -> None:
-        shuffled_indices = torch.randperm(self.dataset.public_size)
+        shuffled_indices = torch.randperm(self.dataset.public_train_size)
         self.next_public_indices = shuffled_indices[: self.public_size_per_round]
 
     def global_update(self, buffer: list) -> None:
