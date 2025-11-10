@@ -99,12 +99,7 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         self.metrics["public_train_loss"] = loss
         self.save_dict["cache"] = self.cache
 
-    def validate(
-        self,
-        public_probs: torch.Tensor,
-        public_indices: torch.Tensor,
-        next_public_indices: torch.Tensor,
-    ):
+    def public_validate(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
         self.model.eval()
         epoch_loss, epoch_samples = 0.0, 0
         if public_probs.numel() != 0 and public_indices.numel() != 0:
@@ -118,19 +113,28 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
                 NonLabelDataset(data=list(torch.unbind(public_probs, dim=0))),
                 batch_size=self.kd_batch_size,
             )
-            for kd_epoch in range(self.kd_epochs):
-                for (data, _), probs in zip(public_data_loader, public_probs_loader):
-                    data, probs = data.to(self.device), probs.to(self.device)
+            with torch.no_grad():
+                for kd_epoch in range(self.kd_epochs):
+                    for (data, _), probs in zip(
+                        public_data_loader, public_probs_loader
+                    ):
+                        data, probs = data.to(self.device), probs.to(self.device)
 
-                    output = F.log_softmax(self.model(data), dim=1)
-                    kd_loss = self.kd_criterion(output, probs.squeeze(1))
+                        output = F.log_softmax(self.model(data), dim=1)
+                        kd_loss = self.kd_criterion(output, probs.squeeze(1))
 
-                    if kd_epoch == self.kd_epochs - 1:
-                        epoch_loss += kd_loss.item() * data.size(0)
-                        epoch_samples += data.size(0)
+                        if kd_epoch == self.kd_epochs - 1:
+                            epoch_loss += kd_loss.item() * data.size(0)
+                            epoch_samples += data.size(0)
         self.metrics["public_val_loss"] = (
             epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
         )
+
+    def validate(
+        self,
+        next_public_indices: torch.Tensor,
+    ):
+        self.model.eval()
 
         loss_sum = 0.0
         acc_sum = 0.0
@@ -207,6 +211,8 @@ def scarlet_client_worker(
         process.update_cache(cache_update[0], cache_update[1], cache_update[2])
     process.set_cache(new_cache)
     process.distill(public_probs, public_indices)
+    if dataset.validation_ratio > 0:
+        process.public_validate(val_public_probs, val_public_indices)
     process.train()
     if next_indices.numel() == 0:
         probs, indices = torch.empty(0), torch.empty(0)
@@ -215,9 +221,7 @@ def scarlet_client_worker(
     process.evaluate(round)
     package = [probs, indices]
     if dataset.validation_ratio > 0:
-        val_probs, val_indices = process.validate(
-            val_public_probs, val_public_indices, next_val_public_indices
-        )
+        val_probs, val_indices = process.validate(next_val_public_indices)
         package.extend([val_probs, val_indices])
     process.save()
     return package
