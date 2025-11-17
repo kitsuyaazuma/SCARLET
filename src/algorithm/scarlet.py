@@ -29,7 +29,7 @@ class CacheType(enum.IntEnum):
 
 @dataclass
 class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
-    def prepare(self, device: str, client_id: int, dataset: PartitionedDataset):
+    def prepare(self, device: str, client_id: int, dataset: PartitionedDataset) -> None:
         super().prepare(device, client_id, dataset)
         self.cache: list[torch.Tensor | None] = [
             None for _ in range(self.dataset.public_size)
@@ -64,10 +64,10 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
     ):
         if stale_indices.numel() != 0:
             for index in stale_indices:
-                self.cache[index.item()] = None
+                self.cache[int(index.item())] = None
         if indices.numel() != 0 and probs.numel() != 0:
             for index, prob in zip(indices, probs):
-                self.cache[index.item()] = prob
+                self.cache[int(index.item())] = prob
         self.save_dict["cache"] = self.cache
 
     def train(self) -> tuple[float, float]:
@@ -76,7 +76,9 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         self.metrics["private_train_acc"] = acc
         return loss, acc
 
-    def distill(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
+    def distill(
+        self, public_probs: torch.Tensor, public_indices: torch.Tensor
+    ) -> float:
         if public_probs.numel() != 0 and public_indices.numel() != 0:
             public_probs_queue = deque(torch.unbind(public_probs, dim=0))
             public_probs_with_cache = []
@@ -98,14 +100,18 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         loss = super().distill(public_probs, public_indices)
         self.metrics["public_train_loss"] = loss
         self.save_dict["cache"] = self.cache
+        return loss
 
-    def public_validate(self, public_probs: torch.Tensor, public_indices: torch.Tensor):
+    def public_validate(
+        self, public_probs: torch.Tensor, public_indices: torch.Tensor
+    ) -> None:
         self.model.eval()
         epoch_loss, epoch_samples = 0.0, 0
         if public_probs.numel() != 0 and public_indices.numel() != 0:
             public_data_loader = DataLoader(
                 Subset(
-                    self.dataset.get_public_train_dataset(), public_indices.tolist()
+                    self.dataset.get_public_validation_dataset(),
+                    public_indices.tolist(),
                 ),
                 batch_size=self.kd_batch_size,
             )
@@ -114,26 +120,22 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
                 batch_size=self.kd_batch_size,
             )
             with torch.no_grad():
-                for kd_epoch in range(self.kd_epochs):
-                    for (data, _), probs in zip(
-                        public_data_loader, public_probs_loader
-                    ):
-                        data, probs = data.to(self.device), probs.to(self.device)
+                for (data, _), probs in zip(public_data_loader, public_probs_loader):
+                    data, probs = data.to(self.device), probs.to(self.device)
 
-                        output = F.log_softmax(self.model(data), dim=1)
-                        kd_loss = self.kd_criterion(output, probs.squeeze(1))
+                    output = F.log_softmax(self.model(data), dim=1)
+                    kd_loss = self.kd_criterion(output, probs.squeeze(1))
 
-                        if kd_epoch == self.kd_epochs - 1:
-                            epoch_loss += kd_loss.item() * data.size(0)
-                            epoch_samples += data.size(0)
-        self.metrics["public_val_loss"] = (
-            epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
-        )
+                    epoch_loss += kd_loss.item() * data.size(0)
+                    epoch_samples += data.size(0)
+            self.metrics["public_val_loss"] = (
+                epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
+            )
 
     def validate(
         self,
         next_public_indices: torch.Tensor,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         self.model.eval()
 
         loss_sum = 0.0
@@ -183,11 +185,11 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             return torch.stack(local_probs), next_public_indices
         return torch.empty(0), torch.empty(0)
 
-    def save(self):
+    def save(self) -> None:
         super().save()
         with open(self.csv_path, "a") as f:
             writer = csv.writer(f)
-            row = [self.metrics[name] for name in self.header]
+            row = [self.metrics.get(name, 0.0) for name in self.header]
             writer.writerow(row)
 
 
@@ -255,7 +257,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
             analysis_dir=analysis_dir,
         )
 
-    def local_process(  # type: ignore  # pyright: ignore[reportIncompatibleMethodOverride]
+    def local_process(  # type: ignore
         self,
         payload: tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]],
         id_list: list[int],
@@ -561,9 +563,8 @@ class SCARLETServerHandler(DSFLServerHandler):
                     output = F.log_softmax(self.model(data), dim=1)
                     prob = prob.squeeze(1)
                     kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
-                    if kd_epoch == self.kd_epochs - 1:
-                        val_loss += kd_loss.item() * data.size(0)
-                        val_samples += data.size(0)
+                    val_loss += kd_loss.item() * data.size(0)
+                    val_samples += data.size(0)
             self.metrics["public_val_loss"] = (
                 val_loss / val_samples if val_samples > 0 else 0.0
             )
@@ -582,7 +583,7 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         with open(self.csv_path, "a") as f:
             writer = csv.writer(f)
-            row = [self.metrics[name] for name in self.header]
+            row = [self.metrics.get(name, 0.0) for name in self.header]
             writer.writerow(row)
         self.metrics = {}
 
@@ -650,7 +651,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         return new_cache
 
     @property
-    def downlink_package(  # type: ignore  # pyright: ignore[reportIncompatibleMethodOverride]
+    def downlink_package(  # type: ignore
         self,
     ) -> tuple[list[torch.Tensor], dict[int, list[torch.Tensor]]]:
         downlink_package = super().downlink_package
