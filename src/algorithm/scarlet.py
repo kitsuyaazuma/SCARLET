@@ -52,9 +52,10 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
                 ("public_val_loss", None),
             ]
         )
-        with open(self.csv_path, "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(self.metrics.keys())
+        if not self.csv_path.exists():
+            with open(self.csv_path, "w") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.metrics.keys())
 
     def set_cache(self, new_cache: torch.Tensor):
         self.new_cache_list = new_cache.tolist()

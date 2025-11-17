@@ -25,6 +25,10 @@ name = "torch_cu121"
 url = "https://download.pytorch.org/whl/cu121"
 priority = "explicit"
 
+[tool.basedpyright]
+typeCheckingMode = "basic"
+reportUnusedCallResult = false
+
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.11.1"
 ruff = "^0.5.7"
