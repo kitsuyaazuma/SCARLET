@@ -1,8 +1,7 @@
 import csv
-import os
 from collections import defaultdict, deque
 import enum
-from typing import NamedTuple, override
+from typing import NamedTuple, OrderedDict, override
 import torch
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -39,22 +38,23 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             self.kd_optimizer.load_state_dict(
                 torch.load(self.state_dict_path)["kd_optimizer"]
             )
+
         self.metrics_dir = self.analysis_dir.joinpath("metrics")
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.csv_path = self.metrics_dir.joinpath(f"{self.client_id}.csv")
-        self.header = [
-            "private_train_loss",
-            "private_train_acc",
-            "private_val_loss",
-            "private_val_acc",
-            "public_train_loss",
-            "public_val_loss",
-        ]
-        if not self.csv_path.exists():
-            with open(self.csv_path, "w") as f:
-                writer = csv.writer(f)
-                writer.writerow(self.header)
-        self.metrics: dict[str, float] = {}
+        self.metrics: OrderedDict[str, float | None] = OrderedDict(
+            [
+                ("private_train_loss", None),
+                ("private_train_acc", None),
+                ("private_val_loss", None),
+                ("private_val_acc", None),
+                ("public_train_loss", None),
+                ("public_val_loss", None),
+            ]
+        )
+        with open(self.csv_path, "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(self.metrics.keys())
 
     def set_cache(self, new_cache: torch.Tensor):
         self.new_cache_list = new_cache.tolist()
@@ -142,7 +142,7 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         acc_sum = 0.0
         total = 0
         valset = self.dataset.get_private_validation_dataset(self.client_id)
-        val_loader = DataLoader(valset, batch_size=100, shuffle=False)
+        val_loader = DataLoader(valset, batch_size=self.batch_size, shuffle=False)
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
@@ -189,8 +189,8 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
         super().save()
         with open(self.csv_path, "a") as f:
             writer = csv.writer(f)
-            row = [self.metrics.get(name, 0.0) for name in self.header]
-            writer.writerow(row)
+            writer.writerow(self.metrics.values())
+        self.metrics = OrderedDict.fromkeys(self.metrics.keys(), None)
 
 
 def scarlet_client_worker(
@@ -357,31 +357,22 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         self.metrics_dir = analysis_dir.joinpath("metrics")
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
-        self.header = [
-            "public_train_loss",
-            "public_val_loss",
-        ]
         self.csv_path = self.metrics_dir.joinpath("server.csv")
-        if not self.csv_path.exists():
-            with open(self.csv_path, "w") as f:
-                writer = csv.writer(f)
-                writer.writerow(self.header)
-        self.metrics: dict[str, float] = {}
+        self.metrics: OrderedDict[str, float | None] = OrderedDict(
+            [
+                ("public_train_loss", None),
+                ("public_val_loss", None),
+            ]
+        )
+        with open(self.csv_path, "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(self.metrics.keys())
+
         self.public_val_probs = torch.empty(0)
         self.public_val_indices = torch.empty(0)
         self.next_public_val_indices = torch.empty(0)
 
         self.set_next_public_indices()
-
-        self.enable_instrumentation = (
-            os.environ.get("ENABLE_SCARLET_INSTRUMENTATION", "false").lower() == "true"
-        )
-        if self.enable_instrumentation:
-            print("[SCARLET] Instrumentation for soft-label disagreement is ENABLED.")
-            self.avg_variance: float = 0.0
-            self.avg_entropy_of_mean: float = 0.0
-            self.avg_client_entropy_mean: float = 0.0
-            self.avg_client_entropy_var: float = 0.0
 
     @override
     def sample_clients(self):
@@ -419,56 +410,6 @@ class SCARLETServerHandler(DSFLServerHandler):
             for prob, indice in zip(probs, indices):
                 public_probs_stack[indice.item()].append(prob)
 
-        if self.enable_instrumentation:
-            round_variances = []
-            round_avg_soft_label_entropies = []
-            round_client_entropy_means = []
-            round_client_entropy_vars = []
-
-            for _, client_probs_list in public_probs_stack.items():
-                if not client_probs_list:
-                    continue
-                client_probs_tensor = torch.stack(
-                    client_probs_list
-                )  # (num_clients, num_classes)
-
-                if client_probs_tensor.shape[0] <= 1:
-                    continue
-
-                variance_per_class = torch.var(client_probs_tensor, dim=0)
-                round_variances.append(variance_per_class.mean().item())
-
-                mean_prob = client_probs_tensor.mean(dim=0)
-                avg_soft_label_entropy = -torch.sum(
-                    mean_prob * torch.log(mean_prob + 1e-9)
-                )
-                round_avg_soft_label_entropies.append(avg_soft_label_entropy.item())
-
-                entropies = -torch.sum(
-                    client_probs_tensor * torch.log(client_probs_tensor + 1e-9), dim=1
-                )
-                round_client_entropy_means.append(entropies.mean().item())
-                round_client_entropy_vars.append(entropies.var().item())
-
-            self.avg_variance = (
-                float(np.mean(round_variances)) if round_variances else 0.0
-            )
-            self.avg_entropy_of_mean = (
-                float(np.mean(round_avg_soft_label_entropies))
-                if round_avg_soft_label_entropies
-                else 0.0
-            )
-            self.avg_client_entropy_mean = (
-                float(np.mean(round_client_entropy_means))
-                if round_client_entropy_means
-                else 0
-            )
-            self.avg_client_entropy_var = (
-                float(np.mean(round_client_entropy_vars))
-                if round_client_entropy_vars
-                else 0
-            )
-
         public_probs: list[torch.Tensor] = []
         public_indices: list[int] = []
         for index, probs_by_index in public_probs_stack.items():
@@ -485,11 +426,63 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
-        self.calculate_cache_diff(public_indices)
+        self._calculate_cache_diff(public_indices)
         # update cache
         new_cache = self.update_cache(public_probs, public_indices)
 
         # update global model
+        self.metrics["public_train_loss"] = self._train_public(
+            public_indices, public_probs
+        )
+
+        if self.dataset.validation_ratio > 0.0:
+            val_probs_list = [ele[2] for ele in buffer]
+            val_indices_list = [ele[3] for ele in buffer]
+            val_public_probs_stack = defaultdict(list)
+            for probs, indices in zip(val_probs_list, val_indices_list):
+                if probs.numel() == 0 and indices.numel() == 0:
+                    continue
+                for prob, indice in zip(probs, indices):
+                    val_public_probs_stack[indice.item()].append(prob)
+            val_public_probs: list[torch.Tensor] = []
+            val_public_indices: list[int] = []
+            for index, probs_by_index in val_public_probs_stack.items():
+                val_public_indices.append(index)
+                mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
+                # Enhanced Entropy Reduction Aggregation
+                era_prob = mean_prob**self.era_exponent / torch.sum(
+                    mean_prob**self.era_exponent
+                )
+                val_public_probs.append(era_prob)
+            self.public_val_indices = torch.tensor(val_public_indices)
+            self.public_val_probs = torch.stack(val_public_probs)
+
+            self.metrics["public_val_loss"] = self._validate_public(
+                val_public_indices, val_public_probs
+            )
+
+        self.public_indices = torch.tensor(public_indices)
+        not_already_cached_probs = [
+            prob
+            for i, prob in enumerate(public_probs)
+            if new_cache[i] != CacheType.ALREADY_HIT
+        ]
+        if len(not_already_cached_probs) == 0:
+            self.public_probs = torch.empty(0)
+        else:
+            self.public_probs = torch.stack(not_already_cached_probs)
+        self.new_cache = torch.tensor([cache.value for cache in new_cache])
+
+        with open(self.csv_path, "a") as f:
+            writer = csv.writer(f)
+            writer.writerow(self.metrics.values())
+        self.metrics = OrderedDict.fromkeys(self.metrics.keys(), None)
+
+        self.set_next_public_indices()
+
+    def _train_public(
+        self, public_indices: list[int], public_probs: list[torch.Tensor]
+    ) -> float:
         self.model.train()
         public_subset = Subset(self.dataset.get_public_train_dataset(), public_indices)
         public_loader = DataLoader(public_subset, batch_size=self.kd_batch_size)
@@ -515,81 +508,36 @@ class SCARLETServerHandler(DSFLServerHandler):
                 self.kd_optimizer.zero_grad()
                 kd_loss.backward()
                 self.kd_optimizer.step()
-        self.metrics["public_train_loss"] = epoch_loss / epoch_samples
+        return epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
 
-        if self.dataset.validation_ratio > 0:
-            val_probs_list = [ele[2] for ele in buffer]
-            val_indices_list = [ele[3] for ele in buffer]
-            val_public_probs_stack = defaultdict(list)
-            for probs, indices in zip(val_probs_list, val_indices_list):
-                if probs.numel() == 0 and indices.numel() == 0:
-                    continue
-                for prob, indice in zip(probs, indices):
-                    val_public_probs_stack[indice.item()].append(prob)
-            val_public_probs: list[torch.Tensor] = []
-            val_public_indices: list[int] = []
-            for index, probs_by_index in val_public_probs_stack.items():
-                val_public_indices.append(index)
-                mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
-                # Enhanced Entropy Reduction Aggregation
-                era_prob = mean_prob**self.era_exponent / torch.sum(
-                    mean_prob**self.era_exponent
-                )
-                val_public_probs.append(era_prob)
-            self.public_val_indices = torch.tensor(val_public_indices)
-            self.public_val_probs = torch.stack(val_public_probs)
+    def _validate_public(
+        self, public_indices: list[int], public_probs: list[torch.Tensor]
+    ) -> float:
+        self.model.eval()
+        public_val_subset = Subset(
+            self.dataset.get_public_validation_dataset(), public_indices
+        )
+        public_val_loader = DataLoader(public_val_subset, batch_size=self.kd_batch_size)
+        public_val_probs_loader = DataLoader(
+            NonLabelDataset(data=public_probs),
+            batch_size=self.kd_batch_size,
+        )
+        val_loss, val_samples = 0.0, 0
+        with torch.no_grad():
+            for (data, target), prob in zip(public_val_loader, public_val_probs_loader):
+                if self.cuda:
+                    data = data.cuda(self.device)
+                    target = target.cuda(self.device)
+                    prob = prob.cuda(self.device)
 
-            self.model.eval()
-            public_val_subset = Subset(
-                self.dataset.get_public_validation_dataset(), val_public_indices
-            )
-            public_val_loader = DataLoader(
-                public_val_subset, batch_size=self.kd_batch_size
-            )
-            public_val_probs_loader = DataLoader(
-                NonLabelDataset(data=val_public_probs),
-                batch_size=self.kd_batch_size,
-            )
-            val_loss, val_samples = 0.0, 0
-            with torch.no_grad():
-                for (data, target), prob in zip(
-                    public_val_loader, public_val_probs_loader
-                ):
-                    if self.cuda:
-                        data = data.cuda(self.device)
-                        target = target.cuda(self.device)
-                        prob = prob.cuda(self.device)
+                output = F.log_softmax(self.model(data), dim=1)
+                prob = prob.squeeze(1)
+                kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
+                val_loss += kd_loss.item() * data.size(0)
+                val_samples += data.size(0)
+        return val_loss / val_samples if val_samples > 0 else 0.0
 
-                    output = F.log_softmax(self.model(data), dim=1)
-                    prob = prob.squeeze(1)
-                    kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
-                    val_loss += kd_loss.item() * data.size(0)
-                    val_samples += data.size(0)
-            self.metrics["public_val_loss"] = (
-                val_loss / val_samples if val_samples > 0 else 0.0
-            )
-
-        self.public_indices = torch.tensor(public_indices)
-        not_already_cached_probs = [
-            prob
-            for i, prob in enumerate(public_probs)
-            if new_cache[i] != CacheType.ALREADY_HIT
-        ]
-        if len(not_already_cached_probs) == 0:
-            self.public_probs = torch.empty(0)
-        else:
-            self.public_probs = torch.stack(not_already_cached_probs)
-        self.new_cache = torch.tensor([cache.value for cache in new_cache])
-
-        with open(self.csv_path, "a") as f:
-            writer = csv.writer(f)
-            row = [self.metrics.get(name, 0.0) for name in self.header]
-            writer.writerow(row)
-        self.metrics = {}
-
-        self.set_next_public_indices()
-
-    def calculate_cache_diff(self, public_indices: list[int]) -> None:
+    def _calculate_cache_diff(self, public_indices: list[int]) -> None:
         # calculate cache difference for each selected client
         self.cache_update_by_client = {}
         for client_id in range(self.dataset.num_clients):
