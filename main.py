@@ -15,7 +15,7 @@ from algorithm import (
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
-from blazefl.reproducibility import setup_reproducibility
+from core import setup_reproducibility
 from dataset import (
     CommonPartitionedDataset,
     CommonPartitionStrategy,

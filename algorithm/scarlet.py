@@ -16,9 +16,13 @@ from algorithm.dsfl import (
     DSFLClientTrainer,
     DSFLServerHandler,
 )
-from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer, SHMHandle
-from blazefl.reproducibility import create_rng_suite
-from blazefl.reproducibility.generator import setup_reproducibility
+from core import (
+    BaseServerHandler,
+    ProcessPoolClientTrainer,
+    SHMHandle,
+    create_rng_suite,
+    setup_reproducibility,
+)
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
 from models import CommonModelName, CommonModelSelector

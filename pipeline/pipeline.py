@@ -3,7 +3,7 @@ from typing import Protocol
 
 import wandb
 
-from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer
+from core import BaseServerHandler, ProcessPoolClientTrainer
 
 
 class CommonServerHandler(BaseServerHandler, Protocol):
