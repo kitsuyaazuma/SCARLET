@@ -2,10 +2,11 @@ import logging
 from typing import Protocol
 
 import wandb
-from blazefl.core import BaseServerHandler, ThreadPoolClientTrainer
+
+from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer
 
 
-class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
+class CommonServerHandler(BaseServerHandler, Protocol):
     round: int
 
     def get_summary(self) -> dict[str, float]: ...
@@ -14,9 +15,8 @@ class SummarizableBaseServerHandler(BaseServerHandler, Protocol):
 class CommonPipeline:
     def __init__(
         self,
-        handler: SummarizableBaseServerHandler,
-        # trainer: CommonClientTrainer,
-        trainer: ThreadPoolClientTrainer,
+        handler: CommonServerHandler,
+        trainer: ProcessPoolClientTrainer,
         run: wandb.Run,
     ) -> None:
         self.handler = handler

@@ -7,7 +7,6 @@ from typing import Annotated
 import torch
 import typer
 import wandb
-from blazefl.reproducibility import setup_reproducibility
 
 from algorithm import (
     AlgorithmName,
@@ -16,6 +15,7 @@ from algorithm import (
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
+from blazefl.reproducibility import setup_reproducibility
 from dataset import (
     CommonPartitionedDataset,
     CommonPartitionStrategy,
@@ -42,6 +42,9 @@ def main(
     dataset_root_dir: Annotated[
         Path, typer.Option(help="Root directory for the dataset.")
     ] = Path("/tmp/scarlet/dataset"),
+    state_dir: Annotated[
+        Path, typer.Option(help="Directory to save intermediate states.")
+    ] = Path("/tmp/scarlet/state"),
     seed: Annotated[int, typer.Option(help="Seed for reproducibility.")] = 42,
     num_clients: Annotated[
         int, typer.Option(help="Total number of clients in the federation.")
@@ -184,6 +187,7 @@ def main(
                 kd_lr=kd_lr,
                 kd_batch_size=kd_batch_size,
                 public_size_per_round=public_size_per_round,
+                state_dir=state_dir,
             )
         case AlgorithmName.SCARLET:
             handler = SCARLETServerHandler(
@@ -217,6 +221,7 @@ def main(
                 kd_lr=kd_lr,
                 kd_batch_size=kd_batch_size,
                 public_size_per_round=public_size_per_round,
+                state_dir=state_dir,
             )
 
     try:

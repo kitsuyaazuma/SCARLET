@@ -7,7 +7,7 @@
 Official implementation of **SCARLET** from the paper "[Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation](https://arxiv.org/abs/2504.19602)".
 
 > [!IMPORTANT]
-> The `main` branch contains a simplified implementation for better understanding of SCARLET’s core algorithms, using [BlazeFL](https://github.com/blazefl/blazefl).
+> The `main` branch contains a simplified implementation for better understanding of SCARLET’s core algorithms.
 > For the exact experiment code and hyperparameter settings used in our paper, switch to the [`reproducibility`](https://github.com/kitsuyaazuma/SCARLET/tree/reproducibility) branch.
 
 # Getting Started
@@ -19,8 +19,7 @@ git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 uv sync
 
-# NOTE: PYTHON_GIL=0 is required due to a triton issue (https://github.com/triton-lang/triton/issues/8491)
-PYTHON_GIL=0 uv run python main.py
+uv run python main.py
 ```
 
 ## Docker
