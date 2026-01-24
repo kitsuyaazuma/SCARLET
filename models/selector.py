@@ -1,9 +1,9 @@
 from enum import StrEnum
 
 import torch
-from blazefl.core import ModelSelector
 from torch import nn
 
+from blazefl.core import ModelSelector
 from models.resnet import resnet20
 
 

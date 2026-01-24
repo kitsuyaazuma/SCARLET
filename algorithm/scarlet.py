@@ -1,23 +1,24 @@
 import threading
 from collections import defaultdict, deque
-from collections.abc import Iterable
-from concurrent.futures import Future, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 from typing import NamedTuple
 
 import torch
-from blazefl.core import (
-    BaseServerHandler,
-    ThreadPoolClientTrainer,
-)
-from blazefl.reproducibility import create_rng_suite
 from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
 
-from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
+from algorithm.dsfl import (
+    DSFLClientConfig,
+    DSFLClientState,
+    DSFLClientTrainer,
+    DSFLServerHandler,
+)
+from blazefl.core import BaseServerHandler, ProcessPoolClientTrainer, SHMHandle
+from blazefl.reproducibility import create_rng_suite
+from blazefl.reproducibility.generator import setup_reproducibility
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
 from models import CommonModelName, CommonModelSelector
@@ -26,12 +27,9 @@ from models import CommonModelName, CommonModelSelector
 @dataclass
 class SCARLETUplinkPackage:
     cid: int
-    soft_labels: torch.Tensor
-    indices: torch.Tensor
+    soft_labels: torch.Tensor | SHMHandle
+    indices: torch.Tensor | SHMHandle
     metadata: dict
-    # Validation
-    val_soft_labels: torch.Tensor
-    val_indices: torch.Tensor
 
 
 @dataclass
@@ -40,10 +38,6 @@ class SCARLETDownlinkPackage:
     indices: torch.Tensor | None
     next_indices: torch.Tensor
     cache_signals: torch.Tensor | None
-    # Validation
-    val_soft_labels: torch.Tensor | None
-    val_indices: torch.Tensor | None
-    val_next_indices: torch.Tensor | None = None
 
 
 class CacheSignal(IntEnum):
@@ -108,17 +102,6 @@ class SCARLETServerHandler(
         self.cache_signals: torch.Tensor | None = None
         self.rng_suite = create_rng_suite(seed)
 
-        # Start Validation ###
-        self.global_val_soft_labels: torch.Tensor | None = None
-        self.global_val_indices: torch.Tensor | None = None
-        self.global_val_next_indices: torch.Tensor | None = None
-        self.public_train_loss = 0.0
-        self.public_val_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.VALIDATION_PUBLIC, cid=None
-        )
-        self.public_val_loss = 0.0
-        # End Validation ###
-
     def sample_clients(self) -> list[int]:
         sampled_clients = self.rng_suite.python.sample(
             range(self.num_clients), self.num_clients_per_round
@@ -143,13 +126,6 @@ class SCARLETServerHandler(
                 self.cached_indices.append(i)
             else:
                 request_indices.append(i)
-
-        # Start Validation ###
-        if self.dataset.public_val_ratio > 0:
-            self.global_val_next_indices = torch.randperm(
-                self.dataset.public_val_size, generator=self.rng_suite.torch_cpu
-            )
-        # End Validation ###
 
         return torch.tensor(request_indices)
 
@@ -177,6 +153,7 @@ class SCARLETServerHandler(
             list[torch.Tensor]
         )
         for soft_labels, indices in zip(soft_labels_list, indices_list, strict=True):
+            assert type(soft_labels) is torch.Tensor and type(indices) is torch.Tensor
             for soft_label, index in zip(soft_labels, indices, strict=True):
                 soft_labels_stack[int(index.item())].append(soft_label)
 
@@ -234,53 +211,6 @@ class SCARLETServerHandler(
 
         self.global_indices = torch.tensor(global_indices)
 
-        # Start Validation ###
-        if self.dataset.public_val_ratio > 0:
-            val_soft_labels_list = [ele.val_soft_labels for ele in buffer]
-            val_indices_list = [ele.val_indices for ele in buffer]
-
-            val_soft_labels_stack: defaultdict[int, list[torch.Tensor]] = defaultdict(
-                list[torch.Tensor]
-            )
-            for soft_labels, indices in zip(
-                val_soft_labels_list, val_indices_list, strict=True
-            ):
-                for soft_label, index in zip(soft_labels, indices, strict=True):
-                    val_soft_labels_stack[int(index.item())].append(soft_label)
-
-            val_global_soft_labels: list[torch.Tensor] = []
-            val_global_indices: list[int] = []
-            for indices, soft_labels in sorted(
-                val_soft_labels_stack.items(), key=lambda x: x[0]
-            ):
-                val_global_indices.append(indices)
-                mean_soft_labels = torch.mean(torch.stack(soft_labels), dim=0)
-                # Enhanced ERA
-                enhanced_era_soft_labels = (
-                    mean_soft_labels**self.enhanced_era_exponent
-                ) / torch.sum(mean_soft_labels**self.enhanced_era_exponent)
-                val_global_soft_labels.append(enhanced_era_soft_labels)
-            self.global_val_soft_labels = torch.stack(val_global_soft_labels)
-            self.global_val_indices = torch.tensor(val_global_indices)
-
-            public_val_loader = DataLoader(
-                Subset(self.public_val_dataset, val_global_indices),
-                batch_size=self.kd_batch_size,
-                num_workers=0,
-            )
-            self.public_val_loss = DSFLServerHandler.distill(
-                self.model,
-                self.kd_optimizer,
-                public_val_loader,
-                val_global_soft_labels,
-                self.kd_epochs,
-                self.kd_batch_size,
-                self.device,
-                stop_event=None,
-                update_weights=False,
-            )
-        # End Validation ###
-
     def update_global_cache(
         self, indices: list[int], soft_labels: list[torch.Tensor]
     ) -> list[CacheSignal]:
@@ -317,38 +247,12 @@ class SCARLETServerHandler(
         client_test_acc = sum(m["test_acc"] for m in self.metadata_list) / len(
             self.metadata_list
         )
-        client_private_train_loss = sum(
-            m["private_train_loss"] for m in self.metadata_list
-        ) / len(self.metadata_list)
-        client_private_train_acc = sum(
-            m["private_train_acc"] for m in self.metadata_list
-        ) / len(self.metadata_list)
-        summary = {
-            "server_test_acc": server_test_acc,
-            "server_test_loss": server_test_loss,
-            "client_private_train_acc": client_private_train_acc,
-            "client_private_train_loss": client_private_train_loss,
-            "server_public_train_loss": self.public_train_loss,
-            "server_public_val_loss": self.public_val_loss,
-            "client_test_acc": client_test_acc,
-            "client_test_loss": client_test_loss,
+        return {
+            "server_acc": server_test_acc,
+            "server_loss": server_test_loss,
+            "client_acc": client_test_acc,
+            "client_loss": client_test_loss,
         }
-        if self.dataset.private_val_ratio > 0:
-            summary["client_private_val_loss"] = sum(
-                m["private_val_loss"] for m in self.metadata_list
-            ) / len(self.metadata_list)
-            summary["client_private_val_acc"] = sum(
-                m["private_val_acc"] for m in self.metadata_list
-            ) / len(self.metadata_list)
-        if self.dataset.public_val_ratio > 0 and any(
-            m["public_val_loss"] is not None for m in self.metadata_list
-        ):
-            summary["client_public_val_loss"] = sum(
-                m["public_val_loss"]
-                for m in self.metadata_list
-                if m["public_val_loss"] is not None
-            ) / len([m for m in self.metadata_list if m["public_val_loss"] is not None])
-        return summary
 
     def downlink_package(self) -> SCARLETDownlinkPackage:
         next_indices = self.get_next_indices()
@@ -357,9 +261,6 @@ class SCARLETServerHandler(
             self.global_indices,
             next_indices,
             self.cache_signals,
-            self.global_val_soft_labels,
-            self.global_val_indices,
-            self.global_val_next_indices,
         )
 
 
@@ -367,8 +268,21 @@ class LocalCacheEntry(NamedTuple):
     soft_label: torch.Tensor | None
 
 
+@dataclass
+class SCARLETClientConfig(DSFLClientConfig): ...
+
+
+@dataclass
+class SCARLETClientState(DSFLClientState):
+    local_cache: list[LocalCacheEntry]
+
+
 class SCARLETClientTrainer(
-    ThreadPoolClientTrainer[SCARLETUplinkPackage, SCARLETDownlinkPackage]
+    ProcessPoolClientTrainer[
+        SCARLETUplinkPackage,
+        SCARLETDownlinkPackage,
+        SCARLETClientConfig,
+    ]
 ):
     def __init__(
         self,
@@ -386,6 +300,7 @@ class SCARLETClientTrainer(
         seed: int,
         num_parallels: int,
         public_size_per_round: int,
+        state_dir: Path,
     ) -> None:
         self.model_states = [
             model_selector.select_model(model_name).state_dict()
@@ -398,10 +313,6 @@ class SCARLETClientTrainer(
             None for _ in range(num_clients)
         ]
         self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
-        self.local_caches = [
-            [LocalCacheEntry(soft_label=None) for _ in range(dataset.public_train_size)]
-            for _ in range(num_clients)
-        ]
         self.model_selector = model_selector
         self.model_name = model_name
         self.dataset = dataset
@@ -417,6 +328,7 @@ class SCARLETClientTrainer(
         self.kd_lr = kd_lr
         self.seed = seed
         self.num_parallels = num_parallels
+        self.state_dir = state_dir
 
         self.stop_event = threading.Event()
         self.cache: list[SCARLETUplinkPackage] = []
@@ -425,37 +337,51 @@ class SCARLETClientTrainer(
             (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
-        self.public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
-        )
         self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
 
-    def progress_fn(
-        self,
-        it: list[Future],
-    ) -> Iterable[Future]:
-        return tqdm(as_completed(it), total=len(it), desc="Client", leave=False)
+    def prepare_uplink_package_buffer(self) -> SCARLETUplinkPackage:
+        return SCARLETUplinkPackage(
+            cid=-1,
+            soft_labels=self.soft_labels_buffer.clone(),
+            indices=self.indices_buffer.clone(),
+            metadata={},
+        )
 
+    @staticmethod
     def worker(
-        self,
-        cid: int,
-        device: str,
+        config: SCARLETClientConfig,
         payload: SCARLETDownlinkPackage,
+        device: str,
         stop_event: threading.Event,
+        *,
+        shm_buffer: SCARLETUplinkPackage | None = None,
     ) -> SCARLETUplinkPackage:
-        model = self.model_selector.select_model(self.model_name)
-        model.load_state_dict(self.model_states[cid])
+        setup_reproducibility(config.seed)
+        model = config.model_selector.select_model(config.model_name)
+        optimizer = torch.optim.SGD(model.parameters(), lr=config.lr)
+        kd_optimizer: torch.optim.SGD | None = None
+        if config.state_path.exists():
+            state = torch.load(config.state_path, weights_only=False)
+            assert isinstance(state, SCARLETClientState)
+            model.load_state_dict(state.model)
+            optimizer.load_state_dict(state.optimizer)
+            if state.kd_optimizer is not None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
+                kd_optimizer.load_state_dict(state.kd_optimizer)
+            rng_suite = state.random
+            local_cache = state.local_cache
+        else:
+            rng_suite = create_rng_suite(config.seed)
+            local_cache = [
+                LocalCacheEntry(soft_label=None)
+                for _ in range(config.dataset.public_train_size)
+            ]
         model.to(device)
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
-        if (optimizer_state := self.optimizer_states[cid]) is not None:
-            optimizer.load_state_dict(optimizer_state)
-        kd_optimizer = torch.optim.SGD(model.parameters(), lr=self.kd_lr)
-        if (kd_optimizer_state := self.kd_optimizer_states[cid]) is not None:
-            kd_optimizer.load_state_dict(kd_optimizer_state)
-        rng_suite = self.rng_suites[cid]
-        local_cache = self.local_caches[cid]
 
         # Distill
+        public_dataset = config.dataset.get_dataset(
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
+        )
         if (
             payload.indices is not None
             and payload.soft_labels is not None
@@ -468,27 +394,28 @@ class SCARLETClientTrainer(
                 cache_signals=payload.cache_signals,
             )
             global_indices = payload.indices.tolist()
-            open_loader = DataLoader(
-                Subset(self.public_dataset, global_indices),
-                batch_size=self.kd_batch_size,
-                num_workers=0,
+            if kd_optimizer is None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
+            public_loader = DataLoader(
+                Subset(public_dataset, global_indices),
+                batch_size=config.kd_batch_size,
             )
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                public_loader=open_loader,
+                public_loader=public_loader,
                 global_soft_labels=global_soft_labels,
-                kd_epochs=self.kd_epochs,
-                kd_batch_size=self.kd_batch_size,
+                kd_epochs=config.kd_epochs,
+                kd_batch_size=config.kd_batch_size,
                 device=device,
                 stop_event=stop_event,
             )
 
         # Train
-        private_loader = self.dataset.get_dataloader(
+        private_loader = config.dataset.get_dataloader(
             type_=CommonPartitionType.TRAIN_PRIVATE,
-            cid=cid,
-            batch_size=self.batch_size,
+            cid=config.cid,
+            batch_size=config.batch_size,
             generator=rng_suite.torch_cpu,
         )
         train_loss, train_acc = DSFLClientTrainer.train(
@@ -496,7 +423,7 @@ class SCARLETClientTrainer(
             optimizer=optimizer,
             data_loader=private_loader,
             device=device,
-            epochs=self.epochs,
+            epochs=config.epochs,
             stop_event=stop_event,
         )
 
@@ -504,9 +431,8 @@ class SCARLETClientTrainer(
         soft_labels = torch.empty(0)
         if len(payload.next_indices) > 0:
             public_loader = DataLoader(
-                Subset(self.public_dataset, payload.next_indices.tolist()),
-                batch_size=self.batch_size,
-                num_workers=0,
+                Subset(public_dataset, payload.next_indices.tolist()),
+                batch_size=config.batch_size,
             )
             soft_labels = DSFLClientTrainer.predict(
                 model=model,
@@ -515,10 +441,10 @@ class SCARLETClientTrainer(
             )
 
         # Evaluate
-        test_loader = self.dataset.get_dataloader(
+        test_loader = config.dataset.get_dataloader(
             type_=CommonPartitionType.TEST,
-            cid=cid,
-            batch_size=self.batch_size,
+            cid=config.cid,
+            batch_size=config.batch_size,
         )
         test_loss, test_acc = DSFLServerHandler.evaulate(
             model=model,
@@ -526,71 +452,8 @@ class SCARLETClientTrainer(
             device=device,
         )
 
-        self.model_states[cid] = model.state_dict()
-        self.optimizer_states[cid] = optimizer.state_dict()
-        self.kd_optimizer_states[cid] = kd_optimizer.state_dict()
-        self.rng_suites[cid] = rng_suite
-        self.local_caches[cid] = local_cache
-
-        # Start Validation ###
-        val_loss, val_acc = None, None
-        if self.dataset.private_val_ratio > 0:
-            private_val_dataloader = self.dataset.get_dataloader(
-                type_=CommonPartitionType.VALIDATION_PRIVATE,
-                cid=cid,
-                batch_size=self.batch_size,
-            )
-            val_loss, val_acc = DSFLServerHandler.evaulate(
-                model=model,
-                test_loader=private_val_dataloader,
-                device=device,
-            )
-
-        public_val_loss = None
-        val_soft_labels = torch.empty(0)
-        val_indices = torch.empty(0)
-        if self.dataset.public_val_ratio > 0:
-            public_val_dataset = self.dataset.get_dataset(
-                type_=CommonPartitionType.VALIDATION_PUBLIC, cid=None
-            )
-
-            if payload.val_soft_labels is not None and payload.val_indices is not None:
-                public_val_loader = DataLoader(
-                    Subset(public_val_dataset, payload.val_indices.tolist()),
-                    batch_size=self.kd_batch_size,
-                    num_workers=0,
-                )
-                global_val_soft_labels = list(
-                    torch.unbind(payload.val_soft_labels, dim=0)
-                )
-                public_val_loss = DSFLServerHandler.distill(
-                    model=model,
-                    optimizer=torch.optim.SGD(model.parameters(), lr=self.kd_lr),
-                    public_loader=public_val_loader,
-                    global_soft_labels=global_val_soft_labels,
-                    kd_epochs=self.kd_epochs,
-                    kd_batch_size=self.kd_batch_size,
-                    device=device,
-                    stop_event=stop_event,
-                    update_weights=False,
-                )
-
-            if payload.val_next_indices is not None:
-                public_val_loader = DataLoader(
-                    Subset(public_val_dataset, payload.val_next_indices.tolist()),
-                    batch_size=self.batch_size,
-                    num_workers=0,
-                )
-                val_soft_labels = DSFLClientTrainer.predict(
-                    model=model,
-                    data_loader=public_val_loader,
-                    device=device,
-                )
-                val_indices = payload.val_next_indices
-        # End Validation ###
-
         package = SCARLETUplinkPackage(
-            cid=cid,
+            cid=config.cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
             metadata={
@@ -598,15 +461,53 @@ class SCARLETClientTrainer(
                 "private_train_acc": train_acc,
                 "test_loss": test_loss,
                 "test_acc": test_acc,
-                "private_val_loss": val_loss,
-                "private_val_acc": val_acc,
-                "public_val_loss": public_val_loss,
             },
-            val_soft_labels=val_soft_labels,
-            val_indices=val_indices,
         )
+        state = SCARLETClientState(
+            random=rng_suite,
+            model=model.state_dict(),
+            optimizer=optimizer.state_dict(),
+            kd_optimizer=kd_optimizer.state_dict()
+            if kd_optimizer is not None
+            else None,
+            local_cache=local_cache,
+        )
+        torch.save(state, config.state_path)
 
+        # config.dataset.set_dataset(
+        #     type_=CommonPartitionType.TRAIN_PRIVATE,
+        #     cid=config.cid,
+        #     dataset=private_loader.dataset,
+        # )
+
+        assert shm_buffer is not None
+        assert isinstance(shm_buffer.soft_labels, torch.Tensor) and isinstance(
+            package.soft_labels, torch.Tensor
+        )
+        shm_buffer.soft_labels.copy_(package.soft_labels)
+        package.soft_labels = SHMHandle()
+        assert isinstance(shm_buffer.indices, torch.Tensor) and isinstance(
+            package.indices, torch.Tensor
+        )
+        shm_buffer.indices.copy_(package.indices)
+        package.indices = SHMHandle()
         return package
+
+    def get_client_config(self, cid: int) -> SCARLETClientConfig:
+        return SCARLETClientConfig(
+            model_selector=self.model_selector,
+            model_name=self.model_name,
+            dataset=self.dataset,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            lr=self.lr,
+            kd_epochs=self.kd_epochs,
+            kd_batch_size=self.kd_batch_size,
+            kd_lr=self.kd_lr,
+            cid=cid,
+            seed=self.seed + cid,
+            state_path=self.state_dir.joinpath(f"{cid}.pt"),
+        )
 
     @staticmethod
     def update_local_cache(
@@ -623,7 +524,7 @@ class SCARLETClientTrainer(
             match cache_signal:
                 case CacheSignal.CACHED.value:
                     assert local_cache[i].soft_label is not None
-                    restored_global_soft_labels.append(local_cache[i].soft_label)  # type: ignore
+                    restored_global_soft_labels.append(local_cache[i].soft_label)
                 case CacheSignal.NEWLY_CACHED.value:
                     soft_label = global_soft_labels_queue.popleft()
                     local_cache[i] = LocalCacheEntry(soft_label=soft_label)

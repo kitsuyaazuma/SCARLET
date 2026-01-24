@@ -16,23 +16,6 @@ wheels = [
 ]
 
 [[package]]
-name = "blazefl"
-version = "2.0.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/18/f521450b1ba1b8828cb8cee24f794b0060ba4f358410dfdf42fd956e36d6/blazefl-2.0.3.tar.gz", hash = "sha256:789ccf39ae51c86804a422ede2301633c4cb8299aeff6e007249c7c1a877c224", size = 903514, upload-time = "2025-11-04T05:12:46.547Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/0b/d674b9481a7acb2994771eea194cdd00052ae58c0fe51c9edc8480a917c1/blazefl-2.0.3-py3-none-any.whl", hash = "sha256:0642dff0cca080f2c42d574f1ea440364ba4ded2fbe40b449439696c5c473182", size = 33103, upload-time = "2025-11-04T05:12:44.936Z" },
-]
-
-[package.optional-dependencies]
-reproducibility = [
-    { name = "numpy" },
-]
-
-[[package]]
 name = "certifi"
 version = "2025.10.5"
 source = { registry = "https://pypi.org/simple" }
@@ -626,7 +609,6 @@ name = "scarlet"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "blazefl", extra = ["reproducibility"] },
     { name = "torch" },
     { name = "torchvision" },
     { name = "tqdm" },
@@ -643,7 +625,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "blazefl", extras = ["reproducibility"], specifier = ">=2.0.3" },
     { name = "torch", specifier = ">=2.9.0" },
     { name = "torchvision", specifier = ">=0.24.0" },
     { name = "tqdm", specifier = ">=4.67.1" },

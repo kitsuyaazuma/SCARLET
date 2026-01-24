@@ -1,25 +1,21 @@
 import threading
 from collections import defaultdict
-from collections.abc import Iterable
-from concurrent.futures import Future, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from torch.optim.optimizer import StateDict
+from torch.utils.data import DataLoader, Subset
+
 from blazefl.core import (
     BaseServerHandler,
     FilteredDataset,
-    ThreadPoolClientTrainer,
+    ProcessPoolClientTrainer,
+    SHMHandle,
 )
-from blazefl.reproducibility import (
-    RNGSuite,
-    create_rng_suite,
-)
-from torch.optim.optimizer import StateDict
-from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
-
+from blazefl.reproducibility import RNGSuite, create_rng_suite, setup_reproducibility
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
 from models import CommonModelSelector
@@ -29,8 +25,8 @@ from models.selector import CommonModelName
 @dataclass
 class DSFLUplinkPackage:
     cid: int
-    soft_labels: torch.Tensor
-    indices: torch.Tensor
+    soft_labels: torch.Tensor | SHMHandle
+    indices: torch.Tensor | SHMHandle
     metadata: dict
 
 
@@ -120,6 +116,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             list[torch.Tensor]
         )
         for soft_labels, indices in zip(soft_labels_list, indices_list, strict=True):
+            assert type(soft_labels) is torch.Tensor and type(indices) is torch.Tensor
             for soft_label, index in zip(soft_labels, indices, strict=True):
                 soft_labels_stack[int(index.item())].append(soft_label)
 
@@ -260,6 +257,22 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
 
 
 @dataclass
+class DSFLClientConfig:
+    model_selector: CommonModelSelector
+    model_name: CommonModelName
+    dataset: CommonPartitionedDataset
+    epochs: int
+    batch_size: int
+    lr: float
+    kd_epochs: int
+    kd_batch_size: int
+    kd_lr: float
+    cid: int
+    seed: int
+    state_path: Path
+
+
+@dataclass
 class DSFLClientState:
     random: RNGSuite
     model: dict[str, torch.Tensor]
@@ -268,7 +281,7 @@ class DSFLClientState:
 
 
 class DSFLClientTrainer(
-    ThreadPoolClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage]
+    ProcessPoolClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLClientConfig]
 ):
     def __init__(
         self,
@@ -286,6 +299,7 @@ class DSFLClientTrainer(
         seed: int,
         num_parallels: int,
         public_size_per_round: int,
+        state_dir: Path,
     ) -> None:
         self.model_states = [
             model_selector.select_model(model_name).state_dict()
@@ -314,6 +328,7 @@ class DSFLClientTrainer(
         self.kd_lr = kd_lr
         self.seed = seed
         self.num_parallels = num_parallels
+        self.state_dir = state_dir
 
         self.stop_event = threading.Event()
         self.cache: list[DSFLUplinkPackage] = []
@@ -322,59 +337,71 @@ class DSFLClientTrainer(
             (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
-        self.public_dataset = self.dataset.get_dataset(
-            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
-        )
         self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
 
-    def progress_fn(
-        self,
-        it: list[Future],
-    ) -> Iterable[Future]:
-        return tqdm(as_completed(it), total=len(it), desc="Client", leave=False)
+    def prepare_uplink_package_buffer(self) -> DSFLUplinkPackage:
+        return DSFLUplinkPackage(
+            cid=-1,
+            soft_labels=self.soft_labels_buffer.clone(),
+            indices=self.indices_buffer.clone(),
+            metadata={},
+        )
 
+    @staticmethod
     def worker(
-        self,
-        cid: int,
-        device: str,
+        config: DSFLClientConfig,
         payload: DSFLDownlinkPackage,
+        device: str,
         stop_event: threading.Event,
+        *,
+        shm_buffer: DSFLUplinkPackage | None = None,
     ) -> DSFLUplinkPackage:
-        model = self.model_selector.select_model(self.model_name)
-        model.load_state_dict(self.model_states[cid])
+        setup_reproducibility(config.seed)
+        model = config.model_selector.select_model(config.model_name)
+        optimizer = torch.optim.SGD(model.parameters(), lr=config.lr)
+        kd_optimizer: torch.optim.SGD | None = None
+        if config.state_path.exists():
+            state = torch.load(config.state_path, weights_only=False)
+            assert isinstance(state, DSFLClientState)
+            model.load_state_dict(state.model)
+            optimizer.load_state_dict(state.optimizer)
+            if state.kd_optimizer is not None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
+                kd_optimizer.load_state_dict(state.kd_optimizer)
+            rng_suite = state.random
+        else:
+            rng_suite = create_rng_suite(config.seed)
         model.to(device)
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
-        if (optimizer_state := self.optimizer_states[cid]) is not None:
-            optimizer.load_state_dict(optimizer_state)
-        kd_optimizer = torch.optim.SGD(model.parameters(), lr=self.kd_lr)
-        if (kd_optimizer_state := self.kd_optimizer_states[cid]) is not None:
-            kd_optimizer.load_state_dict(kd_optimizer_state)
-        rng_suite = self.rng_suites[cid]
 
         # Distill
+        public_dataset = config.dataset.get_dataset(
+            type_=CommonPartitionType.TRAIN_PUBLIC, cid=None
+        )
         if payload.indices is not None and payload.soft_labels is not None:
             global_soft_labels = list(torch.unbind(payload.soft_labels, dim=0))
             global_indices = payload.indices.tolist()
-            open_loader = DataLoader(
-                Subset(self.public_dataset, global_indices),
-                batch_size=self.kd_batch_size,
+            if kd_optimizer is None:
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=config.kd_lr)
+            public_loader = DataLoader(
+                Subset(public_dataset, global_indices),
+                batch_size=config.kd_batch_size,
             )
             DSFLServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                public_loader=open_loader,
+                public_loader=public_loader,
                 global_soft_labels=global_soft_labels,
-                kd_epochs=self.kd_epochs,
-                kd_batch_size=self.kd_batch_size,
+                kd_epochs=config.kd_epochs,
+                kd_batch_size=config.kd_batch_size,
                 device=device,
                 stop_event=stop_event,
             )
 
         # Train
-        private_loader = self.dataset.get_dataloader(
+        private_loader = config.dataset.get_dataloader(
             type_=CommonPartitionType.TRAIN_PRIVATE,
-            cid=cid,
-            batch_size=self.batch_size,
+            cid=config.cid,
+            batch_size=config.batch_size,
             generator=rng_suite.torch_cpu,
         )
         DSFLClientTrainer.train(
@@ -382,14 +409,14 @@ class DSFLClientTrainer(
             optimizer=optimizer,
             data_loader=private_loader,
             device=device,
-            epochs=self.epochs,
+            epochs=config.epochs,
             stop_event=stop_event,
         )
 
         # Predict
         public_loader = DataLoader(
-            Subset(self.public_dataset, payload.next_indices.tolist()),
-            batch_size=self.batch_size,
+            Subset(public_dataset, payload.next_indices.tolist()),
+            batch_size=config.batch_size,
         )
         soft_labels = DSFLClientTrainer.predict(
             model=model,
@@ -398,10 +425,10 @@ class DSFLClientTrainer(
         )
 
         # Evaluate
-        test_loader = self.dataset.get_dataloader(
+        test_loader = config.dataset.get_dataloader(
             type_=CommonPartitionType.TEST,
-            cid=cid,
-            batch_size=self.batch_size,
+            cid=config.cid,
+            batch_size=config.batch_size,
         )
         loss, acc = DSFLServerHandler.evaulate(
             model=model,
@@ -410,17 +437,56 @@ class DSFLClientTrainer(
         )
 
         package = DSFLUplinkPackage(
-            cid=cid,
+            cid=config.cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
             metadata={"loss": loss, "acc": acc},
         )
 
-        self.model_states[cid] = model.state_dict()
-        self.optimizer_states[cid] = optimizer.state_dict()
-        self.kd_optimizer_states[cid] = kd_optimizer.state_dict()
-        self.rng_suites[cid] = rng_suite
+        state = DSFLClientState(
+            random=rng_suite,
+            model=model.state_dict(),
+            optimizer=optimizer.state_dict(),
+            kd_optimizer=kd_optimizer.state_dict()
+            if kd_optimizer is not None
+            else None,
+        )
+        torch.save(state, config.state_path)
+
+        # config.dataset.set_dataset(
+        #     type_=CommonPartitionType.TRAIN_PRIVATE,
+        #     cid=config.cid,
+        #     dataset=private_loader.dataset,
+        # )
+
+        assert shm_buffer is not None
+        assert isinstance(shm_buffer.soft_labels, torch.Tensor) and isinstance(
+            package.soft_labels, torch.Tensor
+        )
+        shm_buffer.soft_labels.copy_(package.soft_labels)
+        package.soft_labels = SHMHandle()
+        assert isinstance(shm_buffer.indices, torch.Tensor) and isinstance(
+            package.indices, torch.Tensor
+        )
+        shm_buffer.indices.copy_(package.indices)
+        package.indices = SHMHandle()
         return package
+
+    def get_client_config(self, cid: int) -> DSFLClientConfig:
+        return DSFLClientConfig(
+            model_selector=self.model_selector,
+            model_name=self.model_name,
+            dataset=self.dataset,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            lr=self.lr,
+            kd_epochs=self.kd_epochs,
+            kd_batch_size=self.kd_batch_size,
+            kd_lr=self.kd_lr,
+            cid=cid,
+            seed=self.seed + cid,
+            state_path=self.state_dir.joinpath(f"{cid}.pt"),
+        )
 
     @staticmethod
     def train(
