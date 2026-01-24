@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
@@ -332,7 +333,8 @@ class DSFLClientTrainer(
         self.num_parallels = num_parallels
         self.state_dir = state_dir
 
-        self.stop_event = threading.Event()
+        self.manager = mp.Manager()
+        self.stop_event = self.manager.Event()
         self.cache: list[DSFLUplinkPackage] = []
 
         self.soft_labels_buffer = torch.zeros(

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import torch
+import torch.multiprocessing as mp
 from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 
@@ -334,7 +335,8 @@ class SCARLETClientTrainer(
         self.num_parallels = num_parallels
         self.state_dir = state_dir
 
-        self.stop_event = threading.Event()
+        self.manager = mp.Manager()
+        self.stop_event = self.manager.Event()
         self.cache: list[SCARLETUplinkPackage] = []
 
         self.soft_labels_buffer = torch.zeros(

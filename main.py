@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Annotated
 
 import torch
+import torch.multiprocessing as mp
 import typer
 import wandb
 
@@ -134,6 +135,8 @@ def main(
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_split_dir = dataset_root_dir / timestamp
+    dataset_split_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
 
     setup_reproducibility(seed)
 
@@ -236,4 +239,5 @@ def main(
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn")
     typer.run(main)
