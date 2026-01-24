@@ -9,13 +9,15 @@ import torch.nn.functional as F
 from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 
-from blazefl.core import (
+from core import (
     BaseServerHandler,
     FilteredDataset,
     ProcessPoolClientTrainer,
+    RNGSuite,
     SHMHandle,
+    create_rng_suite,
+    setup_reproducibility,
 )
-from blazefl.reproducibility import RNGSuite, create_rng_suite, setup_reproducibility
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
 from models import CommonModelSelector

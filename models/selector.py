@@ -3,7 +3,7 @@ from enum import StrEnum
 import torch
 from torch import nn
 
-from blazefl.core import ModelSelector
+from core import ModelSelector
 from models.resnet import resnet20
 
 
