@@ -1,32 +1,33 @@
 import threading
 from collections import defaultdict, deque
-from copy import deepcopy
 from dataclasses import dataclass
 from enum import IntEnum
-from pathlib import Path
 from typing import NamedTuple
 
 import torch
-import torch.multiprocessing as mp
-from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 
+from algorithm import (
+    CommonClientArgs,
+    CommonClientTrainer,
+    CommonMetricType,
+    CommonServerArgs,
+    CommonServerHandler,
+    distill,
+    evaulate,
+    predict,
+    train,
+)
 from algorithm.dsfl import (
     DSFLClientConfig,
     DSFLClientState,
-    DSFLClientTrainer,
-    DSFLServerHandler,
 )
 from core import (
-    BaseServerHandler,
-    ProcessPoolClientTrainer,
     SHMHandle,
     create_rng_suite,
     setup_reproducibility,
 )
-from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
-from models import CommonModelName, CommonModelSelector
 
 
 @dataclass
@@ -34,7 +35,7 @@ class SCARLETUplinkPackage:
     cid: int
     soft_labels: torch.Tensor | SHMHandle
     indices: torch.Tensor | SHMHandle
-    metadata: dict
+    metrics: dict[str, float]
 
 
 @dataclass
@@ -57,68 +58,27 @@ class GlobalCacheEntry(NamedTuple):
 
 
 class SCARLETServerHandler(
-    BaseServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPackage]
+    CommonServerHandler[SCARLETUplinkPackage, SCARLETDownlinkPackage]
 ):
     def __init__(
         self,
-        model_selector: CommonModelSelector,
-        model_name: str,
-        dataset: CommonPartitionedDataset,
-        global_round: int,
-        num_clients: int,
-        sample_ratio: float,
-        device: str,
-        kd_epochs: int,
-        kd_batch_size: int,
-        kd_lr: float,
-        public_size_per_round: int,
+        common_args: CommonServerArgs,
         enhanced_era_exponent: float,
         cache_duration: int,
-        seed: int,
     ) -> None:
-        self.model_selector = model_selector
-        self.model_name = model_name
-        self.dataset = dataset
-        self.global_round = global_round
-        self.num_clients = num_clients
-        self.sample_ratio = sample_ratio
-        self.device = device
-        self.kd_epochs = kd_epochs
-        self.kd_batch_size = kd_batch_size
-        self.kd_lr = kd_lr
-        self.public_size_per_round = public_size_per_round
+        super().__init__(common_args)
+
         self.enhanced_era_exponent = enhanced_era_exponent
         self.cache_duration = cache_duration
-        self.seed = seed
-
-        self.model = self.model_selector.select_model(CommonModelName(self.model_name))
-        self.model.to(self.device)
-        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
-        self.client_buffer_cache: list[SCARLETUplinkPackage] = []
-        self.global_soft_labels: torch.Tensor | None = None
-        self.global_indices: torch.Tensor | None = None
-        self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
-        self.round = 0
 
         self.global_cache: list[GlobalCacheEntry] = [
             GlobalCacheEntry(soft_label=None, round=0)
             for _ in range(self.dataset.public_train_size)
         ]
         self.cache_signals: torch.Tensor | None = None
-        self.rng_suite = create_rng_suite(seed)
-
-    def sample_clients(self) -> list[int]:
-        sampled_clients = self.rng_suite.python.sample(
-            range(self.num_clients), self.num_clients_per_round
-        )
-
-        return sorted(sampled_clients)
 
     def get_next_indices(self) -> torch.Tensor:
-        shuffled_indices = torch.randperm(
-            self.dataset.public_train_size, generator=self.rng_suite.torch_cpu
-        )
-        next_indices = shuffled_indices[: self.public_size_per_round]
+        next_indices = super().get_next_indices()
         self.cached_indices = []
         request_indices = []
         for i in next_indices.tolist():
@@ -134,25 +94,11 @@ class SCARLETServerHandler(
 
         return torch.tensor(request_indices)
 
-    def if_stop(self) -> bool:
-        return self.round >= self.global_round
-
-    def load(self, payload: SCARLETUplinkPackage) -> bool:
-        self.client_buffer_cache.append(payload)
-
-        if len(self.client_buffer_cache) == self.num_clients_per_round:
-            self.global_update(self.client_buffer_cache)
-            self.round += 1
-            self.client_buffer_cache = []
-            return True
-        else:
-            return False
-
     def global_update(self, buffer) -> None:
         buffer.sort(key=lambda x: x.cid)
         soft_labels_list = [ele.soft_labels for ele in buffer]
         indices_list = [ele.indices for ele in buffer]
-        self.metadata_list = [ele.metadata for ele in buffer]
+        self.metrics_list = [ele.metrics for ele in buffer]
 
         soft_labels_stack: defaultdict[int, list[torch.Tensor]] = defaultdict(
             list[torch.Tensor]
@@ -193,7 +139,7 @@ class SCARLETServerHandler(
             batch_size=self.kd_batch_size,
             num_workers=0,
         )
-        self.public_train_loss = DSFLServerHandler.distill(
+        self.public_train_loss = distill(
             self.model,
             self.kd_optimizer,
             public_loader,
@@ -236,29 +182,6 @@ class SCARLETServerHandler(
                     cache_signals.append(CacheSignal.EXPIRED)
         return cache_signals
 
-    def get_summary(self) -> dict[str, float]:
-        server_test_loss, server_test_acc = DSFLServerHandler.evaulate(
-            self.model,
-            self.dataset.get_dataloader(
-                type_=CommonPartitionType.TEST,
-                cid=None,
-                batch_size=self.kd_batch_size,
-            ),
-            self.device,
-        )
-        client_test_loss = sum(m["test_loss"] for m in self.metadata_list) / len(
-            self.metadata_list
-        )
-        client_test_acc = sum(m["test_acc"] for m in self.metadata_list) / len(
-            self.metadata_list
-        )
-        return {
-            "server_acc": server_test_acc,
-            "server_loss": server_test_loss,
-            "client_acc": client_test_acc,
-            "client_loss": client_test_loss,
-        }
-
     def downlink_package(self) -> SCARLETDownlinkPackage:
         next_indices = self.get_next_indices()
         return SCARLETDownlinkPackage(
@@ -283,7 +206,7 @@ class SCARLETClientState(DSFLClientState):
 
 
 class SCARLETClientTrainer(
-    ProcessPoolClientTrainer[
+    CommonClientTrainer[
         SCARLETUplinkPackage,
         SCARLETDownlinkPackage,
         SCARLETClientConfig,
@@ -291,71 +214,27 @@ class SCARLETClientTrainer(
 ):
     def __init__(
         self,
-        model_selector: CommonModelSelector,
-        model_name: CommonModelName,
-        dataset: CommonPartitionedDataset,
-        device: str,
-        num_clients: int,
-        epochs: int,
-        batch_size: int,
-        lr: float,
-        kd_epochs: int,
-        kd_batch_size: int,
-        kd_lr: float,
-        seed: int,
-        num_parallels: int,
-        public_size_per_round: int,
-        state_dir: Path,
+        common_args: CommonClientArgs,
     ) -> None:
-        self.model_states = [
-            model_selector.select_model(model_name).state_dict()
-            for _ in range(num_clients)
-        ]
-        self.optimizer_states: list[None | StateDict] = [
-            None for _ in range(num_clients)
-        ]
-        self.kd_optimizer_states: list[None | StateDict] = [
-            None for _ in range(num_clients)
-        ]
-        self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
-        self.model_selector = model_selector
-        self.model_name = model_name
-        self.dataset = dataset
-        self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
-        self.num_clients = num_clients
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.lr = lr
-        self.kd_epochs = kd_epochs
-        self.kd_batch_size = kd_batch_size
-        self.kd_lr = kd_lr
-        self.seed = seed
-        self.num_parallels = num_parallels
-        self.state_dir = state_dir
+        super().__init__(common_args)
 
-        self.manager = mp.Manager()
-        self.stop_event = self.manager.Event()
-        self.cache: list[SCARLETUplinkPackage] = []
-
-        self.request_size = public_size_per_round
+        self.request_size = self.public_size_per_round
         self.soft_labels_buffer = torch.zeros(
-            (public_size_per_round, self.dataset.num_classes),
+            (self.public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
-        self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
+        self.indices_buffer = torch.zeros(self.public_size_per_round, dtype=torch.int64)
 
     def prepare_uplink_package_buffer(self) -> SCARLETUplinkPackage:
         return SCARLETUplinkPackage(
             cid=-1,
             soft_labels=self.soft_labels_buffer[: self.request_size].clone(),
             indices=self.indices_buffer[: self.request_size].clone(),
-            metadata={
-                "private_train_loss": 0.0,
-                "private_train_acc": 0.0,
-                "test_loss": 0.0,
-                "test_acc": 0.0,
+            metrics={
+                CommonMetricType.CLIENT_TRAIN_LOSS: 0.0,
+                CommonMetricType.CLIENT_TRAIN_ACC: 0.0,
+                CommonMetricType.CLIENT_TEST_LOSS: 0.0,
+                CommonMetricType.CLIENT_TEST_ACC: 0.0,
             },
         )
 
@@ -418,7 +297,7 @@ class SCARLETClientTrainer(
                 Subset(public_dataset, global_indices),
                 batch_size=config.kd_batch_size,
             )
-            DSFLServerHandler.distill(
+            distill(
                 model=model,
                 optimizer=kd_optimizer,
                 public_loader=public_loader,
@@ -436,7 +315,7 @@ class SCARLETClientTrainer(
             batch_size=config.batch_size,
             generator=rng_suite.torch_cpu,
         )
-        train_loss, train_acc = DSFLClientTrainer.train(
+        train_loss, train_acc = train(
             model=model,
             optimizer=optimizer,
             data_loader=private_loader,
@@ -452,7 +331,7 @@ class SCARLETClientTrainer(
                 Subset(public_dataset, payload.next_indices.tolist()),
                 batch_size=config.batch_size,
             )
-            soft_labels = DSFLClientTrainer.predict(
+            soft_labels = predict(
                 model=model,
                 data_loader=public_loader,
                 device=device,
@@ -464,7 +343,7 @@ class SCARLETClientTrainer(
             cid=config.cid,
             batch_size=config.batch_size,
         )
-        test_loss, test_acc = DSFLServerHandler.evaulate(
+        test_loss, test_acc = evaulate(
             model=model,
             test_loader=test_loader,
             device=device,
@@ -474,11 +353,11 @@ class SCARLETClientTrainer(
             cid=config.cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
-            metadata={
-                "private_train_loss": train_loss,
-                "private_train_acc": train_acc,
-                "test_loss": test_loss,
-                "test_acc": test_acc,
+            metrics={
+                CommonMetricType.CLIENT_TRAIN_LOSS: train_loss,
+                CommonMetricType.CLIENT_TRAIN_ACC: train_acc,
+                CommonMetricType.CLIENT_TEST_LOSS: test_loss,
+                CommonMetricType.CLIENT_TEST_ACC: test_acc,
             },
         )
         state = SCARLETClientState(
@@ -553,8 +432,3 @@ class SCARLETClientTrainer(
                         global_soft_labels_queue.popleft()
                     )
         return local_cache, restored_global_soft_labels
-
-    def uplink_package(self) -> list[SCARLETUplinkPackage]:
-        package = deepcopy(self.cache)
-        self.cache = []
-        return package

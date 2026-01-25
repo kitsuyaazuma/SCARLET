@@ -16,6 +16,7 @@ from algorithm import (
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
+from algorithm.common import CommonClientArgs, CommonServerArgs
 from core import setup_reproducibility
 from dataset import (
     CommonPartitionedDataset,
@@ -160,73 +161,53 @@ def main(
     handler: DSFLServerHandler | SCARLETServerHandler | None = None
     trainer: DSFLClientTrainer | SCARLETClientTrainer | None = None
 
+    common_server_args = CommonServerArgs(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=dataset,
+        global_round=global_round,
+        num_clients=num_clients,
+        device=device,
+        sample_ratio=sample_ratio,
+        kd_epochs=kd_epochs,
+        kd_lr=kd_lr,
+        kd_batch_size=kd_batch_size,
+        seed=seed,
+        public_size_per_round=public_size_per_round,
+    )
+    common_client_args = CommonClientArgs(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=dataset,
+        seed=seed,
+        device=device,
+        num_clients=num_clients,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        num_parallels=num_parallels,
+        kd_epochs=kd_epochs,
+        kd_lr=kd_lr,
+        kd_batch_size=kd_batch_size,
+        public_size_per_round=public_size_per_round,
+        state_dir=state_dir,
+    )
+
     match algorithm_name:
         case AlgorithmName.DSFL:
             handler = DSFLServerHandler(
-                model_selector=model_selector,
-                model_name=model_name,
-                dataset=dataset,
-                global_round=global_round,
-                num_clients=num_clients,
-                device=device,
-                sample_ratio=sample_ratio,
-                kd_epochs=kd_epochs,
-                kd_lr=kd_lr,
-                kd_batch_size=kd_batch_size,
-                seed=seed,
-                public_size_per_round=public_size_per_round,
+                common_args=common_server_args,
                 era_temperature=era_temperature,
             )
-            trainer = DSFLClientTrainer(
-                model_selector=model_selector,
-                model_name=model_name,
-                dataset=dataset,
-                seed=seed,
-                device=device,
-                num_clients=num_clients,
-                epochs=epochs,
-                lr=lr,
-                batch_size=batch_size,
-                num_parallels=num_parallels,
-                kd_epochs=kd_epochs,
-                kd_lr=kd_lr,
-                kd_batch_size=kd_batch_size,
-                public_size_per_round=public_size_per_round,
-                state_dir=state_dir,
-            )
+            trainer = DSFLClientTrainer(common_args=common_client_args)
         case AlgorithmName.SCARLET:
             handler = SCARLETServerHandler(
-                model_selector=model_selector,
-                model_name=model_name,
-                dataset=dataset,
-                global_round=global_round,
-                num_clients=num_clients,
-                device=device,
-                sample_ratio=sample_ratio,
-                kd_epochs=kd_epochs,
-                kd_lr=kd_lr,
-                kd_batch_size=kd_batch_size,
-                seed=seed,
-                public_size_per_round=public_size_per_round,
+                common_args=common_server_args,
                 enhanced_era_exponent=enhanced_era_exponent,
                 cache_duration=cache_duration,
             )
             trainer = SCARLETClientTrainer(
-                model_selector=model_selector,
-                model_name=model_name,
-                dataset=dataset,
-                seed=seed,
-                device=device,
-                num_clients=num_clients,
-                epochs=epochs,
-                lr=lr,
-                batch_size=batch_size,
-                num_parallels=num_parallels,
-                kd_epochs=kd_epochs,
-                kd_lr=kd_lr,
-                kd_batch_size=kd_batch_size,
-                public_size_per_round=public_size_per_round,
-                state_dir=state_dir,
+                common_args=common_client_args,
             )
 
     try:
