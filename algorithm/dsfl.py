@@ -348,7 +348,10 @@ class DSFLClientTrainer(
             cid=-1,
             soft_labels=self.soft_labels_buffer.clone(),
             indices=self.indices_buffer.clone(),
-            metadata={},
+            metadata={
+                "loss": 0.0,
+                "acc": 0.0,
+            },
         )
 
     @staticmethod

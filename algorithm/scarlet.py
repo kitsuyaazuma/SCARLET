@@ -350,7 +350,12 @@ class SCARLETClientTrainer(
             cid=-1,
             soft_labels=self.soft_labels_buffer.clone(),
             indices=self.indices_buffer.clone(),
-            metadata={},
+            metadata={
+                "private_train_loss": 0.0,
+                "private_train_acc": 0.0,
+                "test_loss": 0.0,
+                "test_acc": 0.0,
+            },
         )
 
     @staticmethod
