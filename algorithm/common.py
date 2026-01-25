@@ -41,7 +41,7 @@ class CommonMetricType(StrEnum):
 @dataclass(frozen=True)
 class CommonServerArgs:
     model_selector: CommonModelSelector
-    model_name: str
+    model_name: CommonModelName
     dataset: CommonPartitionedDataset
     global_round: int
     num_clients: int
