@@ -5,11 +5,12 @@ on:
     branches:
       - main
     paths-ignore:
+      - 'assets/**'
       - '.github/**'
       - '.gitignore'
-      - 'README.md'
       - 'LICENSE'
       - 'Makefile'
+      - 'README.md'
 
 jobs:
   push_to_registries:

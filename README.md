@@ -9,6 +9,12 @@
 
 Official implementation of SCARLET: "[Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation](https://ieeexplore.ieee.org/document/11344746)" (Accepted by IEEE TMC).
 
+<br>
+<p align="center">
+  <img src="assets/overview.png" width="100%" alt="SCARLET Overview">
+</p>
+<br>
+
 > [!IMPORTANT]
 > The `main` branch contains a simplified implementation for better understanding of SCARLET’s core algorithms.
 > For the exact experiment code and hyperparameter settings used in our paper, switch to the [`reproducibility`](https://github.com/kitsuyaazuma/SCARLET/tree/reproducibility) branch.
