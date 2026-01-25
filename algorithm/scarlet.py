@@ -339,6 +339,7 @@ class SCARLETClientTrainer(
         self.stop_event = self.manager.Event()
         self.cache: list[SCARLETUplinkPackage] = []
 
+        self.request_size = public_size_per_round
         self.soft_labels_buffer = torch.zeros(
             (public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
@@ -348,8 +349,8 @@ class SCARLETClientTrainer(
     def prepare_uplink_package_buffer(self) -> SCARLETUplinkPackage:
         return SCARLETUplinkPackage(
             cid=-1,
-            soft_labels=self.soft_labels_buffer.clone(),
-            indices=self.indices_buffer.clone(),
+            soft_labels=self.soft_labels_buffer[: self.request_size].clone(),
+            indices=self.indices_buffer[: self.request_size].clone(),
             metadata={
                 "private_train_loss": 0.0,
                 "private_train_acc": 0.0,
@@ -357,6 +358,12 @@ class SCARLETClientTrainer(
                 "test_acc": 0.0,
             },
         )
+
+    def local_process(
+        self, payload: SCARLETDownlinkPackage, cid_list: list[int]
+    ) -> None:
+        self.request_size = len(payload.next_indices)
+        return super().local_process(payload, cid_list)
 
     @staticmethod
     def worker(

@@ -43,7 +43,7 @@ def main(
     dataset_root_dir: Annotated[
         Path, typer.Option(help="Root directory for the dataset.")
     ] = Path("/tmp/scarlet/dataset"),
-    state_dir: Annotated[
+    state_root_dir: Annotated[
         Path, typer.Option(help="Directory to save intermediate states.")
     ] = Path("/tmp/scarlet/state"),
     seed: Annotated[int, typer.Option(help="Seed for reproducibility.")] = 42,
@@ -136,6 +136,8 @@ def main(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_split_dir = dataset_root_dir / timestamp
     dataset_split_dir.mkdir(parents=True, exist_ok=True)
+
+    state_dir = state_root_dir / timestamp
     state_dir.mkdir(parents=True, exist_ok=True)
 
     setup_reproducibility(seed)
