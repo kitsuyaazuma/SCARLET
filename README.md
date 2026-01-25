@@ -19,25 +19,25 @@ git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 uv sync
 
-uv run python main.py
+uv run python main.py scarlet
 ```
 
 ## Docker
 
 ```bash
-docker run -it --rm --gpus=all --name scarlet ghcr.io/kitsuyaazuma/scarlet:main --algorithm-name SCARLET
+docker run -it --rm --gpus=all --name scarlet ghcr.io/kitsuyaazuma/scarlet:main scarlet
 
 # or
 
 git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 docker build -t scarlet .
-docker run -it --rm --gpus=all --name scarlet scarlet:latest --algorithm-name SCARLET
+docker run -it --rm --gpus=all --name scarlet scarlet:latest scarlet
 ```
 
 # Configuration
 
-All hyperparameters are managed with [Typer](https://github.com/fastapi/typer). You can see all available options by running:
+All hyperparameters are managed with [Tyro](https://github.com/brentyi/tyro). You can see all available options by running:
 
 ```bash
 uv run python main.py --help
