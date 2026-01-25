@@ -1,19 +1,24 @@
 import threading
 from collections import defaultdict
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-import torch.multiprocessing as mp
 import torch.nn.functional as F
-from torch.optim.optimizer import StateDict
 from torch.utils.data import DataLoader, Subset
 
+from algorithm import (
+    CommonClientArgs,
+    CommonClientTrainer,
+    CommonServerArgs,
+    CommonServerHandler,
+    distill,
+    evaulate,
+    predict,
+    train,
+)
+from algorithm.common import CommonMetricType
 from core import (
-    BaseServerHandler,
-    FilteredDataset,
-    ProcessPoolClientTrainer,
     RNGSuite,
     SHMHandle,
     create_rng_suite,
@@ -30,7 +35,7 @@ class DSFLUplinkPackage:
     cid: int
     soft_labels: torch.Tensor | SHMHandle
     indices: torch.Tensor | SHMHandle
-    metadata: dict
+    metrics: dict[str, float]
 
 
 @dataclass
@@ -40,80 +45,20 @@ class DSFLDownlinkPackage:
     next_indices: torch.Tensor
 
 
-class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
+class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
     def __init__(
         self,
-        model_selector: CommonModelSelector,
-        model_name: str,
-        dataset: CommonPartitionedDataset,
-        global_round: int,
-        num_clients: int,
-        sample_ratio: float,
-        device: str,
-        kd_epochs: int,
-        kd_batch_size: int,
-        kd_lr: float,
-        public_size_per_round: int,
+        common_args: CommonServerArgs,
         era_temperature: float,
-        seed: int,
     ) -> None:
-        self.model_selector = model_selector
-        self.model_name = model_name
-        self.dataset = dataset
-        self.global_round = global_round
-        self.num_clients = num_clients
-        self.sample_ratio = sample_ratio
-        self.device = device
-        self.kd_epochs = kd_epochs
-        self.kd_batch_size = kd_batch_size
-        self.kd_lr = kd_lr
-        self.public_size_per_round = public_size_per_round
+        super().__init__(common_args)
         self.era_temperature = era_temperature
-        self.seed = seed
-
-        self.model = model_selector.select_model(CommonModelName(model_name))
-        self.model.to(self.device)
-        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
-        self.client_buffer_cache: list[DSFLUplinkPackage] = []
-        self.global_soft_labels: torch.Tensor | None = None
-        self.global_indices: torch.Tensor | None = None
-        self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
-        self.round = 0
-
-        self.rng_suite = create_rng_suite(seed)
-
-    def sample_clients(self) -> list[int]:
-        sampled_clients = self.rng_suite.python.sample(
-            range(self.num_clients), self.num_clients_per_round
-        )
-
-        return sorted(sampled_clients)
-
-    def get_next_indices(self) -> torch.Tensor:
-        shuffled_indices = torch.randperm(
-            self.dataset.public_train_size, generator=self.rng_suite.torch_cpu
-        )
-        return shuffled_indices[: self.public_size_per_round]
-
-    def if_stop(self) -> bool:
-        return self.round >= self.global_round
-
-    def load(self, payload: DSFLUplinkPackage) -> bool:
-        self.client_buffer_cache.append(payload)
-
-        if len(self.client_buffer_cache) == self.num_clients_per_round:
-            self.global_update(self.client_buffer_cache)
-            self.round += 1
-            self.client_buffer_cache = []
-            return True
-        else:
-            return False
 
     def global_update(self, buffer) -> None:
         buffer.sort(key=lambda x: x.cid)
         soft_labels_list = [ele.soft_labels for ele in buffer]
         indices_list = [ele.indices for ele in buffer]
-        self.metadata_list = [ele.metadata for ele in buffer]
+        self.metrics_list = [ele.metrics for ele in buffer]
 
         soft_labels_stack: defaultdict[int, list[torch.Tensor]] = defaultdict(
             list[torch.Tensor]
@@ -141,7 +86,7 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
             Subset(public_dataset, global_indices),
             batch_size=self.kd_batch_size,
         )
-        DSFLServerHandler.distill(
+        distill(
             self.model,
             self.kd_optimizer,
             public_loader,
@@ -154,103 +99,6 @@ class DSFLServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage
 
         self.global_soft_labels = torch.stack(global_soft_labels)
         self.global_indices = torch.tensor(global_indices)
-
-    @staticmethod
-    def distill(
-        model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
-        public_loader: DataLoader,
-        global_soft_labels: list[torch.Tensor],
-        kd_epochs: int,
-        kd_batch_size: int,
-        device: str,
-        stop_event: threading.Event | None,
-        update_weights: bool = True,
-    ) -> float:
-        model.to(device)
-        model.train(update_weights)
-        global_soft_label_loader = DataLoader(
-            FilteredDataset(
-                indices=list(range(len(global_soft_labels))),
-                original_data=global_soft_labels,
-            ),
-            batch_size=kd_batch_size,
-        )
-        epoch_loss, epoch_samples = 0.0, 0
-        for kd_epoch in range(kd_epochs):
-            if stop_event is not None and stop_event.is_set():
-                break
-            for data, soft_label in zip(
-                public_loader, global_soft_label_loader, strict=True
-            ):
-                data = data.to(device)
-                soft_label = soft_label.to(device).squeeze(1)
-
-                with torch.set_grad_enabled(update_weights):
-                    output = model(data)
-                    loss = F.kl_div(
-                        F.log_softmax(output, dim=1), soft_label, reduction="batchmean"
-                    )
-                if kd_epoch == kd_epochs - 1:
-                    epoch_loss += loss.item() * soft_label.size(0)
-                    epoch_samples += soft_label.size(0)
-
-                if update_weights:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-        avg_loss = epoch_loss / epoch_samples
-        return avg_loss
-
-    @staticmethod
-    def evaulate(
-        model: torch.nn.Module, test_loader: DataLoader, device: str
-    ) -> tuple[float, float]:
-        model.to(device)
-        model.eval()
-
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
-        with torch.no_grad():
-            for inputs, labels in test_loader:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-
-                outputs = model(inputs)
-                loss = F.cross_entropy(outputs, labels, reduction="mean")
-                total_loss += loss.item() * labels.size(0)
-
-                predicted = outputs.argmax(dim=1)
-                total_correct += (predicted == labels).sum().item()
-                total_samples += labels.size(0)
-
-        avg_loss = total_loss / total_samples
-        avg_acc = total_correct / total_samples
-
-        return avg_loss, avg_acc
-
-    def get_summary(self) -> dict[str, float]:
-        server_loss, server_acc = DSFLServerHandler.evaulate(
-            self.model,
-            self.dataset.get_dataloader(
-                type_=CommonPartitionType.TEST,
-                cid=None,
-                batch_size=self.kd_batch_size,
-            ),
-            self.device,
-        )
-        client_loss = sum(m["loss"] for m in self.metadata_list) / len(
-            self.metadata_list
-        )
-        client_acc = sum(m["acc"] for m in self.metadata_list) / len(self.metadata_list)
-        return {
-            "server_acc": server_acc,
-            "server_loss": server_loss,
-            "client_acc": client_acc,
-            "client_loss": client_loss,
-        }
 
     def downlink_package(self) -> DSFLDownlinkPackage:
         next_indices = self.get_next_indices()
@@ -284,73 +132,30 @@ class DSFLClientState:
 
 
 class DSFLClientTrainer(
-    ProcessPoolClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLClientConfig]
+    CommonClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLClientConfig]
 ):
     def __init__(
         self,
-        model_selector: CommonModelSelector,
-        model_name: CommonModelName,
-        dataset: CommonPartitionedDataset,
-        device: str,
-        num_clients: int,
-        epochs: int,
-        batch_size: int,
-        lr: float,
-        kd_epochs: int,
-        kd_batch_size: int,
-        kd_lr: float,
-        seed: int,
-        num_parallels: int,
-        public_size_per_round: int,
-        state_dir: Path,
+        common_args: CommonClientArgs,
     ) -> None:
-        self.model_states = [
-            model_selector.select_model(model_name).state_dict()
-            for _ in range(num_clients)
-        ]
-        self.optimizer_states: list[None | StateDict] = [
-            None for _ in range(num_clients)
-        ]
-        self.kd_optimizer_states: list[None | StateDict] = [
-            None for _ in range(num_clients)
-        ]
-        self.rng_suites = [create_rng_suite(seed + cid) for cid in range(num_clients)]
-
-        self.model_selector = model_selector
-        self.model_name = model_name
-        self.dataset = dataset
-        self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
-        self.num_clients = num_clients
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.lr = lr
-        self.kd_epochs = kd_epochs
-        self.kd_batch_size = kd_batch_size
-        self.kd_lr = kd_lr
-        self.seed = seed
-        self.num_parallels = num_parallels
-        self.state_dir = state_dir
-
-        self.manager = mp.Manager()
-        self.stop_event = self.manager.Event()
-        self.cache: list[DSFLUplinkPackage] = []
+        super().__init__(common_args)
 
         self.soft_labels_buffer = torch.zeros(
-            (public_size_per_round, self.dataset.num_classes),
+            (self.public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
-        self.indices_buffer = torch.zeros(public_size_per_round, dtype=torch.int64)
+        self.indices_buffer = torch.zeros(self.public_size_per_round, dtype=torch.int64)
 
     def prepare_uplink_package_buffer(self) -> DSFLUplinkPackage:
         return DSFLUplinkPackage(
             cid=-1,
             soft_labels=self.soft_labels_buffer.clone(),
             indices=self.indices_buffer.clone(),
-            metadata={
-                "loss": 0.0,
-                "acc": 0.0,
+            metrics={
+                CommonMetricType.CLIENT_TRAIN_LOSS: 0.0,
+                CommonMetricType.CLIENT_TRAIN_ACC: 0.0,
+                CommonMetricType.CLIENT_TEST_LOSS: 0.0,
+                CommonMetricType.CLIENT_TEST_ACC: 0.0,
             },
         )
 
@@ -393,7 +198,7 @@ class DSFLClientTrainer(
                 Subset(public_dataset, global_indices),
                 batch_size=config.kd_batch_size,
             )
-            DSFLServerHandler.distill(
+            distill(
                 model=model,
                 optimizer=kd_optimizer,
                 public_loader=public_loader,
@@ -411,7 +216,7 @@ class DSFLClientTrainer(
             batch_size=config.batch_size,
             generator=rng_suite.torch_cpu,
         )
-        DSFLClientTrainer.train(
+        train_loss, train_acc = train(
             model=model,
             optimizer=optimizer,
             data_loader=private_loader,
@@ -425,7 +230,7 @@ class DSFLClientTrainer(
             Subset(public_dataset, payload.next_indices.tolist()),
             batch_size=config.batch_size,
         )
-        soft_labels = DSFLClientTrainer.predict(
+        soft_labels = predict(
             model=model,
             data_loader=public_loader,
             device=device,
@@ -437,7 +242,7 @@ class DSFLClientTrainer(
             cid=config.cid,
             batch_size=config.batch_size,
         )
-        loss, acc = DSFLServerHandler.evaulate(
+        test_loss, test_acc = evaulate(
             model=model,
             test_loader=test_loader,
             device=device,
@@ -447,7 +252,12 @@ class DSFLClientTrainer(
             cid=config.cid,
             soft_labels=soft_labels,
             indices=payload.next_indices,
-            metadata={"loss": loss, "acc": acc},
+            metrics={
+                CommonMetricType.CLIENT_TRAIN_LOSS: train_loss,
+                CommonMetricType.CLIENT_TRAIN_ACC: train_acc,
+                CommonMetricType.CLIENT_TEST_LOSS: test_loss,
+                CommonMetricType.CLIENT_TEST_ACC: test_acc,
+            },
         )
 
         state = DSFLClientState(
@@ -494,64 +304,3 @@ class DSFLClientTrainer(
             seed=self.seed + cid,
             state_path=self.state_dir.joinpath(f"{cid}.pt"),
         )
-
-    @staticmethod
-    def train(
-        model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
-        data_loader: DataLoader,
-        device: str,
-        epochs: int,
-        stop_event: threading.Event,
-    ) -> tuple[float, float]:
-        model.to(device)
-        model.train()
-
-        epoch_loss, epoch_correct, epoch_samples = 0.0, 0, 0
-        for epoch in range(epochs):
-            if stop_event.is_set():
-                break
-            for data, target in data_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = F.cross_entropy(output, target, reduction="mean")
-                if epoch == epochs - 1:
-                    epoch_loss += loss.item() * target.size(0)
-                    predicted = output.argmax(dim=1)
-                    epoch_correct += (predicted == target).sum().item()
-                    epoch_samples += target.size(0)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        avg_loss = epoch_loss / epoch_samples
-        avg_acc = epoch_correct / epoch_samples
-        return avg_loss, avg_acc
-
-    @staticmethod
-    def predict(
-        model: torch.nn.Module, data_loader: DataLoader, device: str
-    ) -> torch.Tensor:
-        model.to(device)
-        model.eval()
-
-        soft_labels_list = []
-        with torch.no_grad():
-            for data in data_loader:
-                data = data.to(device)
-
-                output = model(data)
-                soft_label = F.softmax(output, dim=1)
-
-                soft_labels_list.append(soft_label.detach())
-
-        soft_labels = torch.cat(soft_labels_list, dim=0)
-        return soft_labels.cpu()
-
-    def uplink_package(self) -> list[DSFLUplinkPackage]:
-        package = deepcopy(self.cache)
-        self.cache = []
-        return package
