@@ -30,6 +30,7 @@ If you use this implementation in you work, please don't forget to mention the
 author, Yerlan Idelbayev.
 """
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
@@ -64,7 +65,9 @@ class LambdaLayer(nn.Module):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, option="A"):
+    def __init__(
+        self, in_planes: int, planes: int, stride: int = 1, option: str = "A"
+    ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(
             in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
@@ -101,7 +104,7 @@ class BasicBlock(nn.Module):
                     nn.BatchNorm2d(self.expansion * planes),
                 )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
@@ -110,7 +113,9 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10):
+    def __init__(
+        self, block: type[BasicBlock], num_blocks: list[int], num_classes: int = 10
+    ) -> None:
         super().__init__()
         self.in_planes = 16
 
@@ -123,7 +128,7 @@ class ResNet(nn.Module):
 
         self.apply(_weights_init)
 
-    def _make_layer(self, block, planes, num_blocks, stride):
+    def _make_layer(self, block, planes, num_blocks, stride) -> nn.Sequential:
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
@@ -132,7 +137,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
