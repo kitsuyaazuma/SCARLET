@@ -11,12 +11,14 @@ import wandb
 
 from algorithm import (
     AlgorithmName,
+    CommonClientArgs,
+    CommonPipeline,
+    CommonServerArgs,
     DSFLClientTrainer,
     DSFLServerHandler,
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
-from algorithm.common import CommonClientArgs, CommonServerArgs
 from core import setup_reproducibility
 from dataset import (
     CommonPartitionedDataset,
@@ -25,7 +27,6 @@ from dataset import (
     CommonPublicTask,
 )
 from models import CommonModelName, CommonModelSelector
-from pipeline import CommonPipeline
 
 
 def setup_logging() -> None:
