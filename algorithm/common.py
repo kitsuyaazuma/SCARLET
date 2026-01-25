@@ -1,3 +1,4 @@
+import logging
 import threading
 from abc import ABC
 from copy import deepcopy
@@ -9,6 +10,7 @@ from typing import TypeVar
 import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+import wandb
 from torch.utils.data import DataLoader
 
 from core import (
@@ -181,6 +183,40 @@ class CommonClientTrainer(
         package = deepcopy(self.cache)
         self.cache = []
         return package
+
+
+class CommonPipeline:
+    def __init__(
+        self,
+        handler: CommonServerHandler,
+        trainer: ProcessPoolClientTrainer,
+        run: wandb.Run,
+    ) -> None:
+        self.handler = handler
+        self.trainer = trainer
+        self.run = run
+
+    def main(self) -> None:
+        while not self.handler.if_stop():
+            round_ = self.handler.round
+            # server side
+            sampled_clients = self.handler.sample_clients()
+            broadcast = self.handler.downlink_package()
+
+            # client side
+            self.trainer.local_process(broadcast, sampled_clients)
+            uploads = self.trainer.uplink_package()
+
+            # server side
+            for pack in uploads:
+                self.handler.load(pack)
+
+            summary = self.handler.get_summary()
+            self.run.log(summary, step=round_)
+            formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
+            logging.info(f"round: {round_}, {formatted_summary}")
+
+        logging.info("done!")
 
 
 def evaulate(
