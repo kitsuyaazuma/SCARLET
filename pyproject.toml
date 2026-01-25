@@ -3,12 +3,12 @@ name = "scarlet"
 version = "0.1.0"
 description = "Official implementation of SCARLET (Semi-supervised federated distillation with global CAching and Reduced soft-Label EnTropy)"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "torch>=2.9.0",
     "torchvision>=0.24.0",
     "tqdm>=4.67.1",
-    "typer>=0.20.0",
+    "tyro>=1.0.5",
     "wandb>=0.22.3",
 ]
 

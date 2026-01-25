@@ -44,8 +44,8 @@ class CommonPartitionedDataset(PartitionedDataset[CommonPartitionType]):
         partition: CommonPartitionStrategy,
         dir_alpha: float,
         public_size: int,
-        private_val_ratio: float,
-        public_val_ratio: float,
+        private_val_ratio: float = 0.0,
+        public_val_ratio: float = 0.0,
     ) -> None:
         self.root = root
         self.path = path
