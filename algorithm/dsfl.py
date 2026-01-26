@@ -49,9 +49,10 @@ class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPacka
     def __init__(
         self,
         common_args: CommonServerArgs,
+        model: torch.nn.Module,
         era_temperature: float,
     ) -> None:
-        super().__init__(common_args)
+        super().__init__(common_args, model)
         self.era_temperature = era_temperature
 
     def global_update(self, buffer) -> None:

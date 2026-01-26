@@ -39,8 +39,6 @@ class CommonMetricType(StrEnum):
 
 @dataclass(frozen=True)
 class CommonServerArgs:
-    model_selector: CommonModelSelector
-    model_name: CommonModelName
     dataset: CommonPartitionedDataset
     global_round: int
     num_clients: int
@@ -54,9 +52,7 @@ class CommonServerArgs:
 
 
 class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC):
-    def __init__(self, args: CommonServerArgs) -> None:
-        self.model_selector = args.model_selector
-        self.model_name = args.model_name
+    def __init__(self, args: CommonServerArgs, model: torch.nn.Module) -> None:
         self.dataset = args.dataset
         self.global_round = args.global_round
         self.num_clients = args.num_clients
@@ -68,7 +64,7 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
         self.public_size_per_round = args.public_size_per_round
         self.seed = args.seed
 
-        self.model = args.model_selector.select_model(CommonModelName(args.model_name))
+        self.model = model
         self.model.to(self.device)
         self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=args.kd_lr)
         self.client_buffer_cache: list[UplinkPackage] = []
