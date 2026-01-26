@@ -23,11 +23,13 @@ from algorithm.dsfl import (
     DSFLClientState,
 )
 from core import (
+    ModelSelector,
     SHMHandle,
     create_rng_suite,
     setup_reproducibility,
 )
-from dataset.dataset import CommonPartitionType
+from dataset import CommonPartitionType
+from models import CommonModelName
 
 
 @dataclass
@@ -216,8 +218,10 @@ class SCARLETClientTrainer(
     def __init__(
         self,
         common_args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
     ) -> None:
-        super().__init__(common_args)
+        super().__init__(common_args, model_selector, model_name)
 
         self.request_size = self.public_size_per_round
         self.soft_labels_buffer = torch.zeros(

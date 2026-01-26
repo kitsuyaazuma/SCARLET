@@ -89,8 +89,6 @@ def main(cfg: Config) -> None:
         public_size_per_round=cfg.common.public_size_per_round,
     )
     common_client_args = CommonClientArgs(
-        model_selector=model_selector,
-        model_name=cfg.common.model_name,
         dataset=dataset,
         seed=cfg.common.seed,
         device=device,
@@ -113,7 +111,11 @@ def main(cfg: Config) -> None:
                 model=model,
                 era_temperature=cfg.algorithm.era_temperature,
             )
-            trainer = DSFLClientTrainer(common_args=common_client_args)
+            trainer = DSFLClientTrainer(
+                common_args=common_client_args,
+                model_selector=model_selector,
+                model_name=cfg.common.model_name,
+            )
         case SCARLETConfig():
             handler = SCARLETServerHandler(
                 common_args=common_server_args,
@@ -123,6 +125,8 @@ def main(cfg: Config) -> None:
             )
             trainer = SCARLETClientTrainer(
                 common_args=common_client_args,
+                model_selector=model_selector,
+                model_name=cfg.common.model_name,
             )
 
     try:
