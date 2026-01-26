@@ -76,7 +76,7 @@ def main(cfg: Config) -> None:
     handler: DSFLServerHandler | SCARLETServerHandler | None = None
     trainer: DSFLClientTrainer | SCARLETClientTrainer | None = None
 
-    common_server_args = CommonServerArgs(
+    server_args = CommonServerArgs(
         dataset=dataset,
         global_round=cfg.common.global_round,
         num_clients=cfg.common.num_clients,
@@ -88,7 +88,7 @@ def main(cfg: Config) -> None:
         seed=cfg.common.seed,
         public_size_per_round=cfg.common.public_size_per_round,
     )
-    common_client_args = CommonClientArgs(
+    client_args = CommonClientArgs(
         dataset=dataset,
         seed=cfg.common.seed,
         device=device,
@@ -106,25 +106,25 @@ def main(cfg: Config) -> None:
 
     match cfg.algorithm:
         case DSFLConfig():
-            handler = DSFLServerHandler(
-                common_args=common_server_args,
+            handler = DSFLServerHandler.from_args(
+                args=server_args,
                 model=model,
                 era_temperature=cfg.algorithm.era_temperature,
             )
-            trainer = DSFLClientTrainer(
-                common_args=common_client_args,
+            trainer = DSFLClientTrainer.from_args(
+                args=client_args,
                 model_selector=model_selector,
                 model_name=cfg.common.model_name,
             )
         case SCARLETConfig():
-            handler = SCARLETServerHandler(
-                common_args=common_server_args,
+            handler = SCARLETServerHandler.from_args(
+                args=server_args,
                 model=model,
                 enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
                 cache_duration=cfg.algorithm.cache_duration,
             )
-            trainer = SCARLETClientTrainer(
-                common_args=common_client_args,
+            trainer = SCARLETClientTrainer.from_args(
+                args=client_args,
                 model_selector=model_selector,
                 model_name=cfg.common.model_name,
             )

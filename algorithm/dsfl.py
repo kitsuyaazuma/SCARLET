@@ -2,6 +2,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import torch
 import torch.nn.functional as F
@@ -48,12 +49,57 @@ class DSFLDownlinkPackage:
 class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
     def __init__(
         self,
-        common_args: CommonServerArgs,
         model: torch.nn.Module,
+        dataset: CommonPartitionedDataset,
+        global_round: int,
+        num_clients: int,
+        sample_ratio: float,
+        device: str,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        public_size_per_round: int,
+        seed: int,
         era_temperature: float,
     ) -> None:
-        super().__init__(common_args, model)
+        super().__init__(
+            model=model,
+            dataset=dataset,
+            global_round=global_round,
+            num_clients=num_clients,
+            sample_ratio=sample_ratio,
+            device=device,
+            kd_epochs=kd_epochs,
+            kd_batch_size=kd_batch_size,
+            kd_lr=kd_lr,
+            public_size_per_round=public_size_per_round,
+            seed=seed,
+        )
         self.era_temperature = era_temperature
+
+    @classmethod
+    def from_args(  # type: ignore[override]
+        cls: type[Self],
+        args: CommonServerArgs,
+        model: torch.nn.Module,
+        *,
+        era_temperature: float,
+        **kwargs,
+    ) -> Self:
+        return cls(
+            model=model,
+            dataset=args.dataset,
+            global_round=args.global_round,
+            num_clients=args.num_clients,
+            sample_ratio=args.sample_ratio,
+            device=args.device,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            public_size_per_round=args.public_size_per_round,
+            seed=args.seed,
+            era_temperature=era_temperature,
+        )
 
     def global_update(self, buffer) -> None:
         buffer.sort(key=lambda x: x.cid)
@@ -137,17 +183,71 @@ class DSFLClientTrainer(
 ):
     def __init__(
         self,
-        common_args: CommonClientArgs,
         model_selector: ModelSelector,
         model_name: CommonModelName,
+        dataset: CommonPartitionedDataset,
+        device: str,
+        num_clients: int,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        seed: int,
+        num_parallels: int,
+        public_size_per_round: int,
+        state_dir: Path,
     ) -> None:
-        super().__init__(common_args, model_selector, model_name)
+        super().__init__(
+            model_selector=model_selector,
+            model_name=model_name,
+            dataset=dataset,
+            device=device,
+            num_clients=num_clients,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            kd_epochs=kd_epochs,
+            kd_batch_size=kd_batch_size,
+            kd_lr=kd_lr,
+            seed=seed,
+            num_parallels=num_parallels,
+            public_size_per_round=public_size_per_round,
+            state_dir=state_dir,
+        )
 
         self.soft_labels_buffer = torch.zeros(
             (self.public_size_per_round, self.dataset.num_classes),
             dtype=torch.float32,
         )
         self.indices_buffer = torch.zeros(self.public_size_per_round, dtype=torch.int64)
+
+    @classmethod
+    def from_args(  # type: ignore[override]
+        cls: type[Self],
+        args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
+        **kwargs,
+    ) -> Self:
+        return cls(
+            model_selector=model_selector,
+            model_name=model_name,
+            dataset=args.dataset,
+            device=args.device,
+            num_clients=args.num_clients,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            seed=args.seed,
+            num_parallels=args.num_parallels,
+            public_size_per_round=args.public_size_per_round,
+            state_dir=args.state_dir,
+        )
 
     def prepare_uplink_package_buffer(self) -> DSFLUplinkPackage:
         return DSFLUplinkPackage(
