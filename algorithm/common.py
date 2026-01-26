@@ -10,7 +10,6 @@ from typing import Protocol, Self, TypeVar
 
 import torch
 import torch.nn.functional as F
-import wandb
 from torch.utils.data import DataLoader
 
 from core import (
@@ -271,16 +270,20 @@ class SummarizableBaseServerHandler(
     def get_summary(self) -> dict[str, float]: ...
 
 
+class Logger(Protocol):
+    def log(self, data: dict[str, float], step: int | None = None) -> None: ...
+
+
 class CommonPipeline:
     def __init__(
         self,
         handler: SummarizableBaseServerHandler,
         trainer: BaseClientTrainer,
-        run: wandb.Run,
+        logger: Logger,
     ) -> None:
         self.handler = handler
         self.trainer = trainer
-        self.run = run
+        self.logger = logger
 
     def main(self) -> None:
         while not self.handler.if_stop():
@@ -298,7 +301,7 @@ class CommonPipeline:
                 self.handler.load(pack)
 
             summary = self.handler.get_summary()
-            self.run.log(summary, step=round_)
+            self.logger.log(summary, step=round_)
             formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
             logging.info(f"round: {round_}, {formatted_summary}")
 
