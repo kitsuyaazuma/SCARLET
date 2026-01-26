@@ -5,6 +5,7 @@ from dataset.dataset import (
     CommonPrivateTask,
     CommonPublicTask,
 )
+from dataset.interface import DatasetProvider
 
 __all__ = [
     "CommonPartitionedDataset",
@@ -12,4 +13,5 @@ __all__ = [
     "CommonPartitionType",
     "CommonPrivateTask",
     "CommonPublicTask",
+    "DatasetProvider",
 ]

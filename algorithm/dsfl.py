@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, Subset
 from algorithm import (
     CommonClientArgs,
     CommonClientTrainer,
+    CommonMetricType,
     CommonServerArgs,
     CommonServerHandler,
     distill,
@@ -18,17 +19,15 @@ from algorithm import (
     predict,
     train,
 )
-from algorithm.common import CommonMetricType
 from core import (
+    ModelSelector,
     RNGSuite,
     SHMHandle,
     create_rng_suite,
     setup_reproducibility,
 )
-from core.model_selector import ModelSelector
-from dataset import CommonPartitionedDataset
-from dataset.dataset import CommonPartitionType
-from models.selector import CommonModelName
+from dataset import CommonPartitionType, DatasetProvider
+from models import CommonModelName
 
 
 @dataclass
@@ -50,7 +49,7 @@ class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPacka
     def __init__(
         self,
         model: torch.nn.Module,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         global_round: int,
         num_clients: int,
         sample_ratio: float,
@@ -158,7 +157,7 @@ class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPacka
 class DSFLClientConfig:
     model_selector: ModelSelector
     model_name: CommonModelName
-    dataset: CommonPartitionedDataset
+    dataset: DatasetProvider
     epochs: int
     batch_size: int
     lr: float
@@ -185,7 +184,7 @@ class DSFLClientTrainer(
         self,
         model_selector: ModelSelector,
         model_name: CommonModelName,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         device: str,
         num_clients: int,
         epochs: int,

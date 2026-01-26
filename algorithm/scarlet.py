@@ -29,7 +29,7 @@ from core import (
     create_rng_suite,
     setup_reproducibility,
 )
-from dataset import CommonPartitionedDataset, CommonPartitionType
+from dataset import CommonPartitionType, DatasetProvider
 from models import CommonModelName
 
 
@@ -66,7 +66,7 @@ class SCARLETServerHandler(
     def __init__(
         self,
         model: torch.nn.Module,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         global_round: int,
         num_clients: int,
         sample_ratio: float,
@@ -267,7 +267,7 @@ class SCARLETClientTrainer(
         self,
         model_selector: ModelSelector,
         model_name: CommonModelName,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         device: str,
         num_clients: int,
         epochs: int,
