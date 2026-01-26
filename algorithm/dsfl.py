@@ -24,9 +24,9 @@ from core import (
     create_rng_suite,
     setup_reproducibility,
 )
+from core.model_selector import ModelSelector
 from dataset import CommonPartitionedDataset
 from dataset.dataset import CommonPartitionType
-from models import CommonModelSelector
 from models.selector import CommonModelName
 
 
@@ -110,7 +110,7 @@ class DSFLServerHandler(CommonServerHandler[DSFLUplinkPackage, DSFLDownlinkPacka
 
 @dataclass
 class DSFLClientConfig:
-    model_selector: CommonModelSelector
+    model_selector: ModelSelector
     model_name: CommonModelName
     dataset: CommonPartitionedDataset
     epochs: int
@@ -138,8 +138,10 @@ class DSFLClientTrainer(
     def __init__(
         self,
         common_args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
     ) -> None:
-        super().__init__(common_args)
+        super().__init__(common_args, model_selector, model_name)
 
         self.soft_labels_buffer = torch.zeros(
             (self.public_size_per_round, self.dataset.num_classes),

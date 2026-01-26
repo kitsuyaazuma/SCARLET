@@ -17,11 +17,12 @@ from core import (
     BaseClientTrainer,
     BaseServerHandler,
     FilteredDataset,
+    ModelSelector,
     ProcessPoolClientTrainer,
     create_rng_suite,
 )
 from dataset import CommonPartitionedDataset, CommonPartitionType
-from models import CommonModelName, CommonModelSelector
+from models import CommonModelName
 
 UplinkPackage = TypeVar("UplinkPackage")
 DownlinkPackage = TypeVar("DownlinkPackage")
@@ -131,8 +132,6 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
 
 @dataclass(frozen=True)
 class CommonClientArgs:
-    model_selector: CommonModelSelector
-    model_name: CommonModelName
     dataset: CommonPartitionedDataset
     device: str
     num_clients: int
@@ -154,9 +153,11 @@ class CommonClientTrainer(
     def __init__(
         self,
         args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
     ) -> None:
-        self.model_selector = args.model_selector
-        self.model_name = args.model_name
+        self.model_selector = model_selector
+        self.model_name = model_name
         self.dataset = args.dataset
         self.device = args.device
         if self.device == "cuda":
