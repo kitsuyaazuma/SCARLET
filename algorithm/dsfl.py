@@ -1,6 +1,7 @@
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
+from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import Self
 
@@ -197,6 +198,7 @@ class DSFLClientTrainer(
         num_parallels: int,
         public_size_per_round: int,
         state_dir: Path,
+        manager: SyncManager | None,
     ) -> None:
         super().__init__(
             model_selector=model_selector,
@@ -214,6 +216,7 @@ class DSFLClientTrainer(
             num_parallels=num_parallels,
             public_size_per_round=public_size_per_round,
             state_dir=state_dir,
+            manager=manager,
         )
 
         self.soft_labels_buffer = torch.zeros(
@@ -228,6 +231,7 @@ class DSFLClientTrainer(
         args: CommonClientArgs,
         model_selector: ModelSelector,
         model_name: CommonModelName,
+        manager: SyncManager | None = None,
         **kwargs,
     ) -> Self:
         return cls(
@@ -246,6 +250,7 @@ class DSFLClientTrainer(
             num_parallels=args.num_parallels,
             public_size_per_round=args.public_size_per_round,
             state_dir=args.state_dir,
+            manager=manager,
         )
 
     def prepare_uplink_package_buffer(self) -> DSFLUplinkPackage:
