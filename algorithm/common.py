@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 import torch
 import torch.multiprocessing as mp
@@ -14,15 +14,14 @@ import wandb
 from torch.utils.data import DataLoader
 
 from core import (
+    BaseClientTrainer,
     BaseServerHandler,
+    FilteredDataset,
     ProcessPoolClientTrainer,
+    create_rng_suite,
 )
-from core.partitioned_dataset import FilteredDataset
-from core.reproducibility import create_rng_suite
-from dataset import CommonPartitionedDataset
-from dataset.dataset import CommonPartitionType
-from models import CommonModelSelector
-from models.selector import CommonModelName
+from dataset import CommonPartitionedDataset, CommonPartitionType
+from models import CommonModelName, CommonModelSelector
 
 UplinkPackage = TypeVar("UplinkPackage")
 DownlinkPackage = TypeVar("DownlinkPackage")
@@ -80,6 +79,9 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
 
         self.rng_suite = create_rng_suite(args.seed)
         self.metrics_list: list[dict[str, float]] = []
+
+    def get_round(self) -> int:
+        return self.round
 
     def if_stop(self) -> bool:
         return self.round >= self.global_round
@@ -185,11 +187,23 @@ class CommonClientTrainer(
         return package
 
 
+SummarizableUplinkPackage = TypeVar("SummarizableUplinkPackage")
+SummarizableDownlinkPackage = TypeVar("SummarizableDownlinkPackage", covariant=True)
+
+
+class SummarizableBaseServerHandler(
+    BaseServerHandler[SummarizableUplinkPackage, SummarizableDownlinkPackage], Protocol
+):
+    def get_round(self) -> int: ...
+
+    def get_summary(self) -> dict[str, float]: ...
+
+
 class CommonPipeline:
     def __init__(
         self,
-        handler: CommonServerHandler,
-        trainer: ProcessPoolClientTrainer,
+        handler: SummarizableBaseServerHandler,
+        trainer: BaseClientTrainer,
         run: wandb.Run,
     ) -> None:
         self.handler = handler
@@ -198,7 +212,7 @@ class CommonPipeline:
 
     def main(self) -> None:
         while not self.handler.if_stop():
-            round_ = self.handler.round
+            round_ = self.handler.get_round()
             # server side
             sampled_clients = self.handler.sample_clients()
             broadcast = self.handler.downlink_package()
