@@ -4,11 +4,11 @@ from abc import ABC
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
+from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import Protocol, Self, TypeVar
 
 import torch
-import torch.multiprocessing as mp
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
@@ -200,6 +200,7 @@ class CommonClientTrainer(
         num_parallels: int,
         public_size_per_round: int,
         state_dir: Path,
+        manager: SyncManager | None,
     ) -> None:
         self.model_selector = model_selector
         self.model_name = model_name
@@ -219,8 +220,8 @@ class CommonClientTrainer(
         self.public_size_per_round = public_size_per_round
         self.state_dir = state_dir
 
-        self.manager = mp.Manager()
-        self.stop_event = self.manager.Event()
+        self.manager = manager
+        self.stop_event = self.manager.Event() if self.manager else threading.Event()
         self.cache: list[UplinkPackage] = []
 
     @classmethod
@@ -229,6 +230,7 @@ class CommonClientTrainer(
         args: CommonClientArgs,
         model_selector: ModelSelector,
         model_name: CommonModelName,
+        manager: SyncManager | None,
         **kwargs,
     ) -> Self:
         return cls(
@@ -247,6 +249,7 @@ class CommonClientTrainer(
             num_parallels=args.num_parallels,
             public_size_per_round=args.public_size_per_round,
             state_dir=args.state_dir,
+            manager=manager,
             **kwargs,
         )
 

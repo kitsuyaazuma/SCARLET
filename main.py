@@ -104,40 +104,43 @@ def main(cfg: Config) -> None:
         state_dir=state_dir,
     )
 
-    match cfg.algorithm:
-        case DSFLConfig():
-            handler = DSFLServerHandler.from_args(
-                args=server_args,
-                model=model,
-                era_temperature=cfg.algorithm.era_temperature,
-            )
-            trainer = DSFLClientTrainer.from_args(
-                args=client_args,
-                model_selector=model_selector,
-                model_name=cfg.common.model_name,
-            )
-        case SCARLETConfig():
-            handler = SCARLETServerHandler.from_args(
-                args=server_args,
-                model=model,
-                enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
-                cache_duration=cfg.algorithm.cache_duration,
-            )
-            trainer = SCARLETClientTrainer.from_args(
-                args=client_args,
-                model_selector=model_selector,
-                model_name=cfg.common.model_name,
-            )
+    with mp.Manager() as manager:
+        match cfg.algorithm:
+            case DSFLConfig():
+                handler = DSFLServerHandler.from_args(
+                    args=server_args,
+                    model=model,
+                    era_temperature=cfg.algorithm.era_temperature,
+                )
+                trainer = DSFLClientTrainer.from_args(
+                    args=client_args,
+                    model_selector=model_selector,
+                    model_name=cfg.common.model_name,
+                    manager=manager,
+                )
+            case SCARLETConfig():
+                handler = SCARLETServerHandler.from_args(
+                    args=server_args,
+                    model=model,
+                    enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
+                    cache_duration=cfg.algorithm.cache_duration,
+                )
+                trainer = SCARLETClientTrainer.from_args(
+                    args=client_args,
+                    model_selector=model_selector,
+                    model_name=cfg.common.model_name,
+                    manager=manager,
+                )
 
-    try:
-        pipeline = CommonPipeline(
-            handler=handler,
-            trainer=trainer,
-            run=run,
-        )
-        pipeline.main()
-    except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt")
+        try:
+            pipeline = CommonPipeline(
+                handler=handler,
+                trainer=trainer,
+                run=run,
+            )
+            pipeline.main()
+        except KeyboardInterrupt:
+            logging.info("KeyboardInterrupt")
 
 
 if __name__ == "__main__":
