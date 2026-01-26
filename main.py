@@ -136,7 +136,7 @@ def main(cfg: Config) -> None:
             pipeline = CommonPipeline(
                 handler=handler,
                 trainer=trainer,
-                run=run,
+                logger=run,
             )
             pipeline.main()
         except KeyboardInterrupt:
