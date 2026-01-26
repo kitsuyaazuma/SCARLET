@@ -2,7 +2,8 @@ import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import NamedTuple
+from pathlib import Path
+from typing import NamedTuple, Self
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -28,7 +29,7 @@ from core import (
     create_rng_suite,
     setup_reproducibility,
 )
-from dataset import CommonPartitionType
+from dataset import CommonPartitionedDataset, CommonPartitionType
 from models import CommonModelName
 
 
@@ -64,12 +65,33 @@ class SCARLETServerHandler(
 ):
     def __init__(
         self,
-        common_args: CommonServerArgs,
         model: torch.nn.Module,
+        dataset: CommonPartitionedDataset,
+        global_round: int,
+        num_clients: int,
+        sample_ratio: float,
+        device: str,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        public_size_per_round: int,
+        seed: int,
         enhanced_era_exponent: float,
         cache_duration: int,
     ) -> None:
-        super().__init__(common_args, model)
+        super().__init__(
+            model=model,
+            dataset=dataset,
+            global_round=global_round,
+            num_clients=num_clients,
+            sample_ratio=sample_ratio,
+            device=device,
+            kd_epochs=kd_epochs,
+            kd_batch_size=kd_batch_size,
+            kd_lr=kd_lr,
+            public_size_per_round=public_size_per_round,
+            seed=seed,
+        )
 
         self.enhanced_era_exponent = enhanced_era_exponent
         self.cache_duration = cache_duration
@@ -79,6 +101,32 @@ class SCARLETServerHandler(
             for _ in range(self.dataset.public_train_size)
         ]
         self.cache_signals: torch.Tensor | None = None
+
+    @classmethod
+    def from_args(  # type: ignore[override]
+        cls: type[Self],
+        args: CommonServerArgs,
+        model: torch.nn.Module,
+        *,
+        enhanced_era_exponent: float,
+        cache_duration: int,
+        **kwargs,
+    ) -> Self:
+        return cls(
+            model=model,
+            dataset=args.dataset,
+            global_round=args.global_round,
+            num_clients=args.num_clients,
+            sample_ratio=args.sample_ratio,
+            device=args.device,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            public_size_per_round=args.public_size_per_round,
+            seed=args.seed,
+            enhanced_era_exponent=enhanced_era_exponent,
+            cache_duration=cache_duration,
+        )
 
     def get_next_indices(self) -> torch.Tensor:
         next_indices = super().get_next_indices()
@@ -217,11 +265,39 @@ class SCARLETClientTrainer(
 ):
     def __init__(
         self,
-        common_args: CommonClientArgs,
         model_selector: ModelSelector,
         model_name: CommonModelName,
+        dataset: CommonPartitionedDataset,
+        device: str,
+        num_clients: int,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        seed: int,
+        num_parallels: int,
+        public_size_per_round: int,
+        state_dir: Path,
     ) -> None:
-        super().__init__(common_args, model_selector, model_name)
+        super().__init__(
+            model_selector=model_selector,
+            model_name=model_name,
+            dataset=dataset,
+            device=device,
+            num_clients=num_clients,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            kd_epochs=kd_epochs,
+            kd_batch_size=kd_batch_size,
+            kd_lr=kd_lr,
+            seed=seed,
+            num_parallels=num_parallels,
+            public_size_per_round=public_size_per_round,
+            state_dir=state_dir,
+        )
 
         self.request_size = self.public_size_per_round
         self.soft_labels_buffer = torch.zeros(
@@ -229,6 +305,32 @@ class SCARLETClientTrainer(
             dtype=torch.float32,
         )
         self.indices_buffer = torch.zeros(self.public_size_per_round, dtype=torch.int64)
+
+    @classmethod
+    def from_args(  # type: ignore[override]
+        cls: type[Self],
+        args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
+        **kwargs,
+    ) -> Self:
+        return cls(
+            model_selector=model_selector,
+            model_name=model_name,
+            dataset=args.dataset,
+            device=args.device,
+            num_clients=args.num_clients,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            seed=args.seed,
+            num_parallels=args.num_parallels,
+            public_size_per_round=args.public_size_per_round,
+            state_dir=args.state_dir,
+        )
 
     def prepare_uplink_package_buffer(self) -> SCARLETUplinkPackage:
         return SCARLETUplinkPackage(

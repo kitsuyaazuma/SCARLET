@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 
 import torch
 import torch.multiprocessing as mp
@@ -53,29 +53,61 @@ class CommonServerArgs:
 
 
 class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC):
-    def __init__(self, args: CommonServerArgs, model: torch.nn.Module) -> None:
-        self.dataset = args.dataset
-        self.global_round = args.global_round
-        self.num_clients = args.num_clients
-        self.sample_ratio = args.sample_ratio
-        self.device = args.device
-        self.kd_epochs = args.kd_epochs
-        self.kd_batch_size = args.kd_batch_size
-        self.kd_lr = args.kd_lr
-        self.public_size_per_round = args.public_size_per_round
-        self.seed = args.seed
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        dataset: CommonPartitionedDataset,
+        global_round: int,
+        num_clients: int,
+        sample_ratio: float,
+        device: str,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        public_size_per_round: int,
+        seed: int,
+    ) -> None:
+        self.dataset = dataset
+        self.global_round = global_round
+        self.num_clients = num_clients
+        self.sample_ratio = sample_ratio
+        self.device = device
+        self.kd_epochs = kd_epochs
+        self.kd_batch_size = kd_batch_size
+        self.kd_lr = kd_lr
+        self.public_size_per_round = public_size_per_round
+        self.seed = seed
 
         self.model = model
         self.model.to(self.device)
-        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=args.kd_lr)
+        self.kd_optimizer = torch.optim.SGD(self.model.parameters(), lr=kd_lr)
         self.client_buffer_cache: list[UplinkPackage] = []
         self.global_soft_labels: torch.Tensor | None = None
         self.global_indices: torch.Tensor | None = None
         self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
         self.round = 0
 
-        self.rng_suite = create_rng_suite(args.seed)
+        self.rng_suite = create_rng_suite(seed)
         self.metrics_list: list[dict[str, float]] = []
+
+    @classmethod
+    def from_args(
+        cls: type[Self], args: CommonServerArgs, model: torch.nn.Module, **kwargs
+    ) -> Self:
+        return cls(
+            model=model,
+            dataset=args.dataset,
+            global_round=args.global_round,
+            num_clients=args.num_clients,
+            sample_ratio=args.sample_ratio,
+            device=args.device,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            public_size_per_round=args.public_size_per_round,
+            seed=args.seed,
+            **kwargs,
+        )
 
     def get_round(self) -> int:
         return self.round
@@ -152,31 +184,70 @@ class CommonClientTrainer(
 ):
     def __init__(
         self,
-        args: CommonClientArgs,
         model_selector: ModelSelector,
         model_name: CommonModelName,
+        dataset: CommonPartitionedDataset,
+        device: str,
+        num_clients: int,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        kd_epochs: int,
+        kd_batch_size: int,
+        kd_lr: float,
+        seed: int,
+        num_parallels: int,
+        public_size_per_round: int,
+        state_dir: Path,
     ) -> None:
         self.model_selector = model_selector
         self.model_name = model_name
-        self.dataset = args.dataset
-        self.device = args.device
+        self.dataset = dataset
+        self.device = device
         if self.device == "cuda":
             self.device_count = torch.cuda.device_count()
-        self.num_clients = args.num_clients
-        self.epochs = args.epochs
-        self.batch_size = args.batch_size
-        self.lr = args.lr
-        self.kd_epochs = args.kd_epochs
-        self.kd_batch_size = args.kd_batch_size
-        self.kd_lr = args.kd_lr
-        self.seed = args.seed
-        self.num_parallels = args.num_parallels
-        self.public_size_per_round = args.public_size_per_round
-        self.state_dir = args.state_dir
+        self.num_clients = num_clients
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.lr = lr
+        self.kd_epochs = kd_epochs
+        self.kd_batch_size = kd_batch_size
+        self.kd_lr = kd_lr
+        self.seed = seed
+        self.num_parallels = num_parallels
+        self.public_size_per_round = public_size_per_round
+        self.state_dir = state_dir
 
         self.manager = mp.Manager()
         self.stop_event = self.manager.Event()
         self.cache: list[UplinkPackage] = []
+
+    @classmethod
+    def from_args(
+        cls: type[Self],
+        args: CommonClientArgs,
+        model_selector: ModelSelector,
+        model_name: CommonModelName,
+        **kwargs,
+    ) -> Self:
+        return cls(
+            model_selector=model_selector,
+            model_name=model_name,
+            dataset=args.dataset,
+            device=args.device,
+            num_clients=args.num_clients,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            kd_epochs=args.kd_epochs,
+            kd_batch_size=args.kd_batch_size,
+            kd_lr=args.kd_lr,
+            seed=args.seed,
+            num_parallels=args.num_parallels,
+            public_size_per_round=args.public_size_per_round,
+            state_dir=args.state_dir,
+            **kwargs,
+        )
 
     def uplink_package(self) -> list[UplinkPackage]:
         package = deepcopy(self.cache)
