@@ -7,7 +7,10 @@ lint:
 type-check:
 	uv run mypy .
 
-check: format lint type-check
+test:
+	uv run pytest
+
+check: format lint type-check test
 
 sync:
 	uv run wandb sync --sync-all
