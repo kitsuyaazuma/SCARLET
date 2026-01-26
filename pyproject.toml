@@ -15,6 +15,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",
+    "pytest>=9.0.2",
     "ruff>=0.14.2",
     "types-tqdm>=4.67.0.20250809",
 ]
@@ -40,3 +41,7 @@ fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
 known-third-party = ["wandb"]
+
+[tool.pytest.ini_options]
+pythonpath = "."
+testpaths = ["tests"]
