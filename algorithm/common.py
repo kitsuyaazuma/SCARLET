@@ -21,7 +21,8 @@ from core import (
     ProcessPoolClientTrainer,
     create_rng_suite,
 )
-from dataset import CommonPartitionedDataset, CommonPartitionType
+from dataset import CommonPartitionType
+from dataset.interface import DatasetProvider
 from models import CommonModelName
 
 UplinkPackage = TypeVar("UplinkPackage")
@@ -40,7 +41,7 @@ class CommonMetricType(StrEnum):
 
 @dataclass(frozen=True)
 class CommonServerArgs:
-    dataset: CommonPartitionedDataset
+    dataset: DatasetProvider
     global_round: int
     num_clients: int
     sample_ratio: float
@@ -56,7 +57,7 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
     def __init__(
         self,
         model: torch.nn.Module,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         global_round: int,
         num_clients: int,
         sample_ratio: float,
@@ -164,7 +165,7 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
 
 @dataclass(frozen=True)
 class CommonClientArgs:
-    dataset: CommonPartitionedDataset
+    dataset: DatasetProvider
     device: str
     num_clients: int
     epochs: int
@@ -186,7 +187,7 @@ class CommonClientTrainer(
         self,
         model_selector: ModelSelector,
         model_name: CommonModelName,
-        dataset: CommonPartitionedDataset,
+        dataset: DatasetProvider,
         device: str,
         num_clients: int,
         epochs: int,
