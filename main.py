@@ -71,13 +71,12 @@ def main(cfg: Config) -> None:
     model_selector = CommonModelSelector(
         num_classes=dataset.num_classes, seed=cfg.common.seed
     )
+    model = model_selector.select_model(cfg.common.model_name)
 
     handler: DSFLServerHandler | SCARLETServerHandler | None = None
     trainer: DSFLClientTrainer | SCARLETClientTrainer | None = None
 
     common_server_args = CommonServerArgs(
-        model_selector=model_selector,
-        model_name=cfg.common.model_name,
         dataset=dataset,
         global_round=cfg.common.global_round,
         num_clients=cfg.common.num_clients,
@@ -111,12 +110,14 @@ def main(cfg: Config) -> None:
         case DSFLConfig():
             handler = DSFLServerHandler(
                 common_args=common_server_args,
+                model=model,
                 era_temperature=cfg.algorithm.era_temperature,
             )
             trainer = DSFLClientTrainer(common_args=common_client_args)
         case SCARLETConfig():
             handler = SCARLETServerHandler(
                 common_args=common_server_args,
+                model=model,
                 enhanced_era_exponent=cfg.algorithm.enhanced_era_exponent,
                 cache_duration=cfg.algorithm.cache_duration,
             )

@@ -63,10 +63,11 @@ class SCARLETServerHandler(
     def __init__(
         self,
         common_args: CommonServerArgs,
+        model: torch.nn.Module,
         enhanced_era_exponent: float,
         cache_duration: int,
     ) -> None:
-        super().__init__(common_args)
+        super().__init__(common_args, model)
 
         self.enhanced_era_exponent = enhanced_era_exponent
         self.cache_duration = cache_duration
