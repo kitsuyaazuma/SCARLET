@@ -7,12 +7,11 @@
 .venv/
 
 .mypy_cache/
+.pytest_cache/
 .ruff_cache/
 
-outputs/
+wandb/
+assets/
 
 Dockerfile
-
-README.md
-LICENSE
 Makefile
