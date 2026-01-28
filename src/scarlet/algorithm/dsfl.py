@@ -9,7 +9,17 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
-from algorithm import (
+from scarlet.core import (
+    ModelSelector,
+    RNGSuite,
+    SHMHandle,
+    create_rng_suite,
+    setup_reproducibility,
+)
+from scarlet.dataset import CommonPartitionType, DatasetProvider
+from scarlet.models import CommonModelName
+
+from .common import (
     CommonClientArgs,
     CommonClientTrainer,
     CommonMetricType,
@@ -20,15 +30,6 @@ from algorithm import (
     predict,
     train,
 )
-from core import (
-    ModelSelector,
-    RNGSuite,
-    SHMHandle,
-    create_rng_suite,
-    setup_reproducibility,
-)
-from dataset import CommonPartitionType, DatasetProvider
-from models import CommonModelName
 
 
 @dataclass

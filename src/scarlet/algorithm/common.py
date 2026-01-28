@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from core import (
+from scarlet.core import (
     BaseClientTrainer,
     BaseServerHandler,
     FilteredDataset,
@@ -20,9 +20,8 @@ from core import (
     ProcessPoolClientTrainer,
     create_rng_suite,
 )
-from dataset import CommonPartitionType
-from dataset.interface import DatasetProvider
-from models import CommonModelName
+from scarlet.dataset import CommonPartitionType, DatasetProvider
+from scarlet.models import CommonModelName
 
 UplinkPackage = TypeVar("UplinkPackage")
 DownlinkPackage = TypeVar("DownlinkPackage")

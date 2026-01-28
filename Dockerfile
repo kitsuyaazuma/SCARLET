@@ -11,6 +11,6 @@ ENV UV_LINK_MODE=copy
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync
 
-ENTRYPOINT ["uv", "run", "python", "main.py"]
+ENTRYPOINT ["uv", "run", "python", "-m", "scarlet.main"]
 
 CMD ["--help"]

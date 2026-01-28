@@ -6,7 +6,7 @@ from typing import Protocol, TypeVar
 import torch.multiprocessing as mp
 from tqdm import tqdm
 
-from core.utils import process_tensors_in_object, reconstruct_from_shared_memory
+from .utils import process_tensors_in_object, reconstruct_from_shared_memory
 
 UplinkPackage = TypeVar("UplinkPackage")
 DownlinkPackage = TypeVar("DownlinkPackage", contravariant=True)

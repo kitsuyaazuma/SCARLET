@@ -9,7 +9,7 @@ import torch.multiprocessing as mp
 import tyro
 import wandb
 
-from algorithm import (
+from scarlet.algorithm import (
     CommonClientArgs,
     CommonPipeline,
     CommonServerArgs,
@@ -18,10 +18,10 @@ from algorithm import (
     SCARLETClientTrainer,
     SCARLETServerHandler,
 )
-from config import Config, DSFLConfig, SCARLETConfig
-from core import setup_reproducibility
-from dataset import CommonPartitionedDataset
-from models import CommonModelSelector
+from scarlet.config import Config, DSFLConfig, SCARLETConfig
+from scarlet.core import setup_reproducibility
+from scarlet.dataset import CommonPartitionedDataset
+from scarlet.models import CommonModelSelector
 
 
 def setup_logging() -> None:

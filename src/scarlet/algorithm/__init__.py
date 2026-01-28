@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from algorithm.common import (
+from .common import (
     CommonClientArgs,
     CommonClientTrainer,
     CommonMetricType,
@@ -12,8 +12,8 @@ from algorithm.common import (
     predict,
     train,
 )
-from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
-from algorithm.scarlet import SCARLETClientTrainer, SCARLETServerHandler
+from .dsfl import DSFLClientTrainer, DSFLServerHandler
+from .scarlet import SCARLETClientTrainer, SCARLETServerHandler
 
 
 class AlgorithmName(StrEnum):
