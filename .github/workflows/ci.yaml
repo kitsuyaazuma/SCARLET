@@ -35,3 +35,33 @@ jobs:
 
       - name: Run mypy
         run: uv run mypy .
+
+      - name: Run pytest
+        run: uv run pytest --junitxml=pytest.xml --cov-report=term-missing:skip-covered --cov=src tests/ | tee pytest-coverage.txt
+
+      - name: Upload pytest results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pytest-results
+          path: pytest.xml
+
+      - name: Pytest coverage comment
+        if: ${{ github.event_name == 'push' }}
+        id: coverage
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-coverage-path: ./pytest-coverage.txt
+          junitxml-path: ./pytest.xml
+          hide-comment: true
+
+      - name: Create coverage badge
+        if: ${{ github.event_name == 'push' }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: e5ef062df34babec4d9a679f6fadaf11
+          filename: scarlet-coverage.json
+          label: Coverage
+          message: ${{ steps.coverage.outputs.coverage }}
+          color: ${{ steps.coverage.outputs.color }}
