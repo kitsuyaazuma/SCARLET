@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import torch
 
-from algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
-from dataset.interface import DatasetProvider
-from models import CommonModelName
+from scarlet.algorithm.dsfl import DSFLClientTrainer, DSFLServerHandler
+from scarlet.dataset import DatasetProvider
+from scarlet.models import CommonModelName
 
 
 class TestRefactoringSuccess(unittest.TestCase):

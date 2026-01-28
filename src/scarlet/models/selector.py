@@ -3,8 +3,9 @@ from enum import StrEnum
 import torch
 from torch import nn
 
-from core import ModelSelector
-from models.resnet import resnet20
+from scarlet.core import ModelSelector
+
+from .resnet import resnet20
 
 
 class CommonModelName(StrEnum):

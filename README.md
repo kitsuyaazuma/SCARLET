@@ -26,7 +26,7 @@ git clone https://github.com/kitsuyaazuma/SCARLET.git
 cd SCARLET
 uv sync
 
-uv run python main.py scarlet
+uv run python -m scarlet.main scarlet
 ```
 
 ## Docker
@@ -47,7 +47,7 @@ docker run -it --rm --gpus=all --name scarlet scarlet:latest scarlet
 All hyperparameters are managed with [Tyro](https://github.com/brentyi/tyro). You can see all available options by running:
 
 ```bash
-uv run python main.py --help
+uv run python -m scarlet.main --help
 ```
 
 # Citation

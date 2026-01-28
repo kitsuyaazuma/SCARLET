@@ -4,8 +4,8 @@ from typing import Annotated, Literal
 
 import tyro
 
-from dataset import CommonPartitionStrategy, CommonPrivateTask, CommonPublicTask
-from models import CommonModelName
+from scarlet.dataset import CommonPartitionStrategy, CommonPrivateTask, CommonPublicTask
+from scarlet.models import CommonModelName
 
 
 @dataclass

@@ -9,7 +9,16 @@ from typing import NamedTuple, Self
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from algorithm import (
+from scarlet.core import (
+    ModelSelector,
+    SHMHandle,
+    create_rng_suite,
+    setup_reproducibility,
+)
+from scarlet.dataset import CommonPartitionType, DatasetProvider
+from scarlet.models import CommonModelName
+
+from .common import (
     CommonClientArgs,
     CommonClientTrainer,
     CommonMetricType,
@@ -20,18 +29,10 @@ from algorithm import (
     predict,
     train,
 )
-from algorithm.dsfl import (
+from .dsfl import (
     DSFLClientConfig,
     DSFLClientState,
 )
-from core import (
-    ModelSelector,
-    SHMHandle,
-    create_rng_suite,
-    setup_reproducibility,
-)
-from dataset import CommonPartitionType, DatasetProvider
-from models import CommonModelName
 
 
 @dataclass

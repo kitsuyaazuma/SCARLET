@@ -1,11 +1,11 @@
-from dataset.dataset import (
+from .dataset import (
     CommonPartitionedDataset,
     CommonPartitionStrategy,
     CommonPartitionType,
     CommonPrivateTask,
     CommonPublicTask,
 )
-from dataset.interface import DatasetProvider
+from .interface import DatasetProvider
 
 __all__ = [
     "CommonPartitionedDataset",

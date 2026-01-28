@@ -7,9 +7,16 @@ import torchvision
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
-from core import FilteredDataset, PartitionedDataset, create_rng_suite
-from dataset.functional import balance_split, client_inner_dirichlet_partition_faster
-from dataset.transforms import GeneratorRandomCrop, GeneratorRandomHorizontalFlip
+from scarlet.core import FilteredDataset, PartitionedDataset, create_rng_suite
+
+from .functional import (
+    balance_split,
+    client_inner_dirichlet_partition_faster,
+)
+from .transforms import (
+    GeneratorRandomCrop,
+    GeneratorRandomHorizontalFlip,
+)
 
 
 class CommonPrivateTask(StrEnum):

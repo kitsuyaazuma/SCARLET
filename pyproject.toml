@@ -12,6 +12,10 @@ dependencies = [
     "wandb>=0.22.3",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",
@@ -43,5 +47,4 @@ fixable = ["ALL"]
 known-third-party = ["wandb"]
 
 [tool.pytest.ini_options]
-pythonpath = "."
 testpaths = ["tests"]
