@@ -1,5 +1,6 @@
 # SCARLET
-Official implementation of SCARLET (Semi-supervised federated distillation with global CAching and Reduced soft-Label EnTropy)
+
+Official implementation of SCARLET: "[Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation](https://ieeexplore.ieee.org/document/11344746)" (Accepted by IEEE TMC).
 
 # Getting Started
 
@@ -60,16 +61,17 @@ Use these baselines as a rough guide—not as definitive "official" code.
 
 # Citation
 
-If you use this code in your research, please cite our preprint:
+If you use this code in your research, please cite our paper:
 
 ```bibtex
-@misc{azuma2025softlabelcachingsharpeningcommunicationefficient,
-      title={Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation}, 
-      author={Kitsuya Azuma and Takayuki Nishio and Yuichi Kitagawa and Wakako Nakano and Takahito Tanimura},
-      year={2025},
-      eprint={2504.19602},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2504.19602}, 
-}
+@ARTICLE{11344746,
+  author={Azuma, Kitsuya and Nishio, Takayuki and Kitagawa, Yuichi and Nakano, Wakako and Tanimura, Takahito},
+  journal={IEEE Transactions on Mobile Computing}, 
+  title={Soft-Label Caching and Sharpening for Communication-Efficient Federated Distillation}, 
+  year={2026},
+  volume={},
+  number={},
+  pages={1-18},
+  keywords={Servers;Computational modeling;Data models;Mobile computing;Entropy;Data privacy;Accuracy;Training;Quantization (signal);Federated learning;Federated learning;knowledge distillation;non-IID data;communication efficiency},
+  doi={10.1109/TMC.2026.3652819}}
 ```
