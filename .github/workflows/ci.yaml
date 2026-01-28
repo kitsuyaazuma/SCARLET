@@ -47,7 +47,7 @@ jobs:
           path: pytest.xml
 
       - name: Pytest coverage comment
-        # if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' }}
         id: coverage
         uses: MishaKav/pytest-coverage-comment@main
         with:
@@ -56,7 +56,7 @@ jobs:
           hide-comment: true
 
       - name: Create coverage badge
-        # if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' }}
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_SECRET }}
