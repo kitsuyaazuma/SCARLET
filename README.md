@@ -3,6 +3,7 @@
 ![Python Version from PEP 621 TOML](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fkitsuyaazuma%2FSCARLET%2Frefs%2Fheads%2Fmain%2Fpyproject.toml)
 ![GitHub License](https://img.shields.io/github/license/kitsuyaazuma/SCARLET)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/kitsuyaazuma/SCARLET/ci.yaml?label=CI)
+![badge](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/kitsuyaazuma/e5ef062df34babec4d9a679f6fadaf11/raw/test.json)
 [![DOI](https://img.shields.io/badge/DOI-10.1109%2FTMC.2026.3652819-blue)](https://doi.org/10.1109/TMC.2026.3652819)
 [![arXiv](https://img.shields.io/badge/arXiv-2504.19602-b31b1b.svg)](https://arxiv.org/abs/2504.19602)
 
