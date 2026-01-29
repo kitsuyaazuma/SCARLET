@@ -15,6 +15,7 @@ from scarlet.algorithm import (
     predict,
     train,
 )
+from scarlet.dataset import CommonPartitionType
 
 
 class RawTensorDataset(Dataset):
@@ -37,9 +38,11 @@ class MockDatasetProvider:
         self.data = torch.randn(20, 2)
         self.targets = torch.randint(0, 2, (20,))
 
-    def get_dataset(self, type_: Any, cid: int | None) -> TensorDataset:
-        _ = (type_, cid)
-        return TensorDataset(self.data, self.targets)
+    def get_dataset(self, type_: Any, cid: int | None) -> Dataset:
+        _ = cid
+        if type_ in [CommonPartitionType.TRAIN_PRIVATE, CommonPartitionType.TEST]:
+            return TensorDataset(self.data, self.targets)
+        return RawTensorDataset(self.data)
 
     def get_dataloader(
         self,
@@ -235,7 +238,7 @@ def test_common_server_handler_get_summary(
     assert summary["client_test_acc"] == pytest.approx(0.85)
 
 
-def test_common_client_trainer() -> None:
+def test_common_client_trainer(tmp_path: Path) -> None:
     model = SimpleModel()
 
     class MockModelSelector:
@@ -260,7 +263,7 @@ def test_common_client_trainer() -> None:
         seed=42,
         num_parallels=1,
         public_size_per_round=4,
-        state_dir=Path("."),
+        state_dir=tmp_path,
         manager=None,
     )
 
