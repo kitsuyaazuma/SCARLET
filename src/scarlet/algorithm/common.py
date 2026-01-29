@@ -151,7 +151,7 @@ class CommonServerHandler(BaseServerHandler[UplinkPackage, DownlinkPackage], ABC
             m[CommonMetricType.CLIENT_TEST_LOSS] for m in self.metrics_list
         ) / len(self.metrics_list)
         client_test_acc = sum(
-            m[CommonMetricType.CLIENT_TEST_LOSS] for m in self.metrics_list
+            m[CommonMetricType.CLIENT_TEST_ACC] for m in self.metrics_list
         ) / len(self.metrics_list)
         return {
             CommonMetricType.SERVER_TEST_ACC: server_test_acc,
