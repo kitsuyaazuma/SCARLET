@@ -103,6 +103,7 @@ class SCARLETServerHandler(
             for _ in range(self.dataset.public_train_size)
         ]
         self.cache_signals: torch.Tensor | None = None
+        self.cached_indices: list[int] = []
 
     @classmethod
     def from_args(  # type: ignore[override]
@@ -147,6 +148,12 @@ class SCARLETServerHandler(
 
         return torch.tensor(request_indices)
 
+    @staticmethod
+    def enhanced_era(soft_labels: torch.Tensor, exponent: float) -> torch.Tensor:
+        """Apply Enhanced Entropy Reduction Aggregation."""
+        powered = soft_labels**exponent
+        return powered / torch.sum(powered, dim=-1, keepdim=True)
+
     def global_update(self, buffer) -> None:
         buffer.sort(key=lambda x: x.cid)
         soft_labels_list = [ele.soft_labels for ele in buffer]
@@ -169,9 +176,9 @@ class SCARLETServerHandler(
             global_indices.append(indices)
             mean_soft_labels = torch.mean(torch.stack(soft_labels), dim=0)
             # Enhanced ERA
-            enhanced_era_soft_labels = (
-                mean_soft_labels**self.enhanced_era_exponent
-            ) / torch.sum(mean_soft_labels**self.enhanced_era_exponent)
+            enhanced_era_soft_labels = SCARLETServerHandler.enhanced_era(
+                mean_soft_labels, self.enhanced_era_exponent
+            )
             global_soft_labels.append(enhanced_era_soft_labels)
 
         # Restore cached indices and soft-labels
